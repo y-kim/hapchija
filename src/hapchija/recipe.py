@@ -81,3 +81,16 @@ class Context:
         if name == "source-half":
             return source_half
         raise ValueError("알 수 없는 폭 이름: %r" % name)
+
+
+def ribbi_flags(style):
+    """이 두께가 자기 패밀리 안에서 Bold / Italic 중 무엇인지.
+
+    Regular 와 Bold 는 한 패밀리의 네 칸(RIBBI)을 쓰고, 나머지 두께는 이름에
+    두께를 붙인 별도 패밀리를 가진다. 그래서 SemiBold 는 "Monoplex KR SemiBold"
+    패밀리의 Regular 이지 Bold 가 아니다.
+
+    이름 테이블(compose.font_names)과 같은 판단을 써야 fsSelection, macStyle,
+    subfamily 가 서로 어긋나지 않는다.
+    """
+    return style["name"] == "Bold", bool(style.get("italic"))

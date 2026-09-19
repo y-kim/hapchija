@@ -44,22 +44,29 @@ def merge_parts(base, parts, out):
     merged.close()
 
 
-def fs_selection(filename):
-    """이름을 보고 fsSelection 을 고른다.
+def fs_selection(bold, italic):
+    """OS/2 fsSelection. bit 8 (WWS) 은 항상 켠다."""
+    value = 1 << 8
+    if italic:
+        value |= 1 << 0
+    if bold:
+        value |= 1 << 5
+    if not bold and not italic:
+        value |= 1 << 6          # REGULAR
+    return value
 
-    bit 8 (WWS) 은 항상 켜고 REGULAR / BOLD / ITALIC 을 더한다. 보는 순서가
-    중요하다. SemiBold 는 이름에 'Bold' 가 들어 있어서 BOLD 비트가 붙는다.
+
+def mac_style(bold, italic):
+    """head macStyle. fsSelection 과 같은 판단을 써야 한다.
+
+    이 값이 어긋나면 일부 앱이 진짜 이탤릭 위에 가짜 기울임을 덧씌운다.
     """
-    wws = 1 << 8
-    if "Regular" in filename:
-        return wws | (1 << 6)
-    if "BoldItalic" in filename:
-        return wws | (1 << 5) | (1 << 0)
-    if "Bold" in filename:
-        return wws | (1 << 5)
-    if "Italic" in filename:
-        return wws | (1 << 0)
-    return wws
+    value = 0
+    if bold:
+        value |= 1 << 0
+    if italic:
+        value |= 1 << 1
+    return value
 
 
 def drop_codepoints(font, codepoints):
@@ -73,7 +80,7 @@ def drop_codepoints(font, codepoints):
             table.cmap.pop(code, None)
 
 
-def fix_tables(rec, path):
+def fix_tables(rec, path, style):
     fin = rec["finalize"]
     cfg = fin.get("os2", {})
     target = rec["target"]
@@ -84,7 +91,9 @@ def fix_tables(rec, path):
     os2 = font["OS/2"]
     if "xAvgCharWidth" in cfg:
         os2.xAvgCharWidth = cfg["xAvgCharWidth"]
-    os2.fsSelection = fs_selection(os.path.basename(path))
+    bold, italic = R.ribbi_flags(style)
+    os2.fsSelection = fs_selection(bold, italic)
+    font["head"].macStyle = mac_style(bold, italic)
 
     # 세로 메트릭은 FontForge 에서 넣어도 mergeFonts 와 generate 가 윤곽을 보고
     # 다시 계산해 버린다. 그래서 여기서 확정한다.
@@ -158,7 +167,7 @@ def run(rec, work_dir, variants, debug=False):
             os.remove(hinted)
 
         print("fix tables: " + name)
-        fix_tables(rec, base)
+        fix_tables(rec, base, style)
 
     shutil.rmtree(parts_dir, ignore_errors=True)
     print("finalize: done")
