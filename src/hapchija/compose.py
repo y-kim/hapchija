@@ -18,17 +18,29 @@ import fontforge
 from . import fits, ops, recipe as R
 
 
+def range_set(pairs):
+    out = set()
+    for pair in pairs or []:
+        out.update(R.cp_range(pair))
+    return out
+
+
 def available_codepoints(ctx, source, style):
-    """이 소스가 내놓을 수 있는 코드포인트. keepRanges 가 있으면 그 범위로 제한한다."""
+    """이 소스가 내놓을 수 있는 코드포인트.
+
+    keepRanges 가 있으면 그 범위로 제한하고, dropRanges 는 빼낸다.
+    dropRanges 는 사용자 정의 영역(PUA)을 막는 데 쓴다. CJK 글꼴은 벤더 내부용
+    글리프를 PUA 에 수천 개씩 넣어 두는데 (IBM Plex Sans TC 는 4,729 자),
+    합성 결과에 노출될 이유가 없고 Nerd Fonts 영역과 정면으로 부딪친다.
+    """
     path = ctx.path(source["path"], style)
     font = fontforge.open(path)
     cps = ops.codepoints_of(font)
     font.close()
     if source.get("keepRanges"):
-        keep = set()
-        for pair in source["keepRanges"]:
-            keep.update(R.cp_range(pair))
-        cps &= keep
+        cps &= range_set(source["keepRanges"])
+    if source.get("dropRanges"):
+        cps -= range_set(source["dropRanges"])
     return cps
 
 
