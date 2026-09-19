@@ -127,6 +127,39 @@ def item_done(item, src_dir):
     return all(os.path.exists(os.path.join(src_dir, p)) for p in expect)
 
 
+def fetch_files(item, src_dir):
+    """압축이 아니라 개별 파일을 받는다.
+
+    릴리스 자산이 없고 저장소 트리에만 있는 글꼴을 위한 것이다. IBM Plex 는
+    2024-08 에 패키지별 릴리스로 개편했는데, 그 이전 버전은 zip 이 없다.
+    """
+    n = 0
+    to = os.path.join(src_dir, item.get("to", ""))
+    os.makedirs(to, exist_ok=True)
+    for spec in item["files"]:
+        url = spec["url"] if isinstance(spec, dict) else spec
+        name = spec.get("as") if isinstance(spec, dict) else None
+        name = name or url.rsplit("/", 1)[-1]
+        dest = os.path.join(to, name)
+        want = spec.get("sha256") if isinstance(spec, dict) else None
+        if os.path.exists(dest) and want and sha256(dest) == want:
+            continue
+        print("  받는 중 " + name)
+        tmp = dest + ".part"
+        with urllib.request.urlopen(url) as r, open(tmp, "wb") as out:
+            shutil.copyfileobj(r, out)
+        if want:
+            got = sha256(tmp)
+            if got != want:
+                os.remove(tmp)
+                raise SystemExit(
+                    "ERROR: 체크섬이 맞지 않습니다: %s\n  기대 %s\n  실제 %s"
+                    % (url, want, got))
+        os.replace(tmp, dest)
+        n += 1
+    return n
+
+
 def run(recipe, root, force=False):
     items = recipe.get("fetch") or []
     if not items:
@@ -139,14 +172,18 @@ def run(recipe, root, force=False):
     print(f"캐시: {cache_dir()}")
 
     for item in items:
-        name = item.get("name", item["url"].rsplit("/", 1)[-1])
+        name = item.get("name") or (item.get("url") or "").rsplit("/", 1)[-1] or "?"
         if not force and item_done(item, src_dir):
             print(f"[건너뜀] {name} — 이미 있습니다")
             continue
         print(f"[받기] {name}")
-        archive = ensure_archive(item)
-        n = extract(archive, item.get("extract", []), src_dir)
-        print(f"  {n}개 파일을 풀었습니다")
+        if item.get("files"):
+            n = fetch_files(item, src_dir)
+            print(f"  {n}개 파일을 받았습니다")
+        else:
+            archive = ensure_archive(item)
+            n = extract(archive, item.get("extract", []), src_dir)
+            print(f"  {n}개 파일을 풀었습니다")
 
     print("fetch: done")
     return 0
