@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 
 import fontforge
@@ -77,7 +78,15 @@ def build_source(ctx, source, shared, keep_cps=None):
     ops.set_em(font, ctx)
 
     if source.get("italicize") and ctx.style.get("italic"):
+        # 기울이지 않을 범위를 빼고 선택한다.
+        #
+        # CJK 한자는 전통적으로 이탤릭이 없다. 기울이면 어색할 뿐 아니라,
+        # FontForge 의 italicize 는 글리프마다 윤곽을 다시 계산하는 무거운
+        # 연산이라 한자 2만 자에 돌리면 빌드 시간이 몇 배로 늘어난다.
         font.selection.all()
+        for pair in source.get("italicExclude", []):
+            font.selection.select(("less", "unicode", "ranges"),
+                                  R.cp(pair[0]), R.cp(pair[1]))
         font.italicize(italic_angle=ctx.italic_angle)
         font.selection.none()
 
@@ -214,7 +223,8 @@ def compose(ctx, base_font, suffix, out_dir):
     return out
 
 
-def run(rec, root, out_dir, variants, debug=False):
+def run(rec, root, out_dir, variants, debug=False,
+        plan_path=None, only_styles=None, plan_only=False):
     suffix = R.variant_suffix(rec, variants)
     styles = R.styles_for(rec, debug)
     sources = R.active_sources(rec, variants)
@@ -222,26 +232,48 @@ def run(rec, root, out_dir, variants, debug=False):
 
     parts_dir = os.path.join(out_dir, "parts")
     os.makedirs(parts_dir, exist_ok=True)
-
-    # 우선순위대로 코드포인트를 배분한다
-    print("=== 코드포인트 배분 ===")
     ref_ctx = R.Context(rec, styles[0], root, variants)
-    assigned = assign_codepoints(ref_ctx, sources, styles[0])
-    base_cps = assigned[base_source["id"]]
 
-    shared = {}
-    for source in sources:
-        if source.get("fit", {}).get("mode") == "cjkClassify":
-            others = set().union(*(v for k, v in assigned.items() if k != source["id"])) \
-                if len(assigned) > 1 else set()
-            shared["widths"] = fits.classify_widths(
-                ref_ctx, source, styles[0], others - assigned[source["id"]])
+    # 코드포인트 배분과 폭 분류는 두께와 무관하므로 한 번만 한다.
+    # 병렬로 돌릴 때는 부모가 계산해 파일로 넘기고 자식들이 읽어 쓴다.
+    if plan_path and os.path.exists(plan_path) and not plan_only:
+        with open(plan_path, encoding="utf-8") as fp:
+            plan = json.load(fp)
+        assigned = {k: set(v) for k, v in plan["assigned"].items()}
+        shared = {}
+        if plan.get("widths"):
+            shared["widths"] = tuple(set(x) for x in plan["widths"])
+    else:
+        print("=== 코드포인트 배분 ===")
+        assigned = assign_codepoints(ref_ctx, sources, styles[0])
+        shared = {}
+        for source in sources:
+            if source.get("fit", {}).get("mode") == "cjkClassify":
+                others = set().union(*(v for k, v in assigned.items() if k != source["id"])) \
+                    if len(assigned) > 1 else set()
+                shared["widths"] = fits.classify_widths(
+                    ref_ctx, source, styles[0], others - assigned[source["id"]])
+        if plan_path:
+            with open(plan_path, "w", encoding="utf-8") as fp:
+                json.dump({"assigned": {k: sorted(v) for k, v in assigned.items()},
+                           "widths": [sorted(x) for x in shared["widths"]]
+                                     if "widths" in shared else None}, fp)
+            print("배분 결과 저장: " + os.path.basename(plan_path))
+    if plan_only:
+        return
+
+    if only_styles:
+        want = set(only_styles.split(","))
+        styles = [s for s in styles if s["file"] in want]
+    base_cps = assigned[base_source["id"]]
 
     # 심볼 소스는 두께와 무관하므로 한 번만 만든다
     for source in sources:
         if source.get("role") == "symbols":
-            font = build_source(ref_ctx, source, shared, assigned[source["id"]])
             part = os.path.join(parts_dir, "%s.ttf" % source["id"])
+            if os.path.exists(part):
+                continue
+            font = build_source(ref_ctx, source, shared, assigned[source["id"]])
             print("Save " + os.path.basename(part))
             font.generate(part)
             font.close()
@@ -275,11 +307,18 @@ def main(argv=None):
     parser.add_argument("--out", default=None)
     parser.add_argument("--variant", action="append", default=[])
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--plan", default=None,
+                        help="코드포인트 배분 결과 (JSON). 없으면 직접 계산한다")
+    parser.add_argument("--styles", default=None,
+                        help="맡을 두께 이름들, 쉼표로 구분. 없으면 전부")
+    parser.add_argument("--plan-only", action="store_true",
+                        help="배분만 계산해 --plan 에 쓰고 끝낸다")
     args = parser.parse_args(argv)
 
     rec = R.load(args.recipe)
     root = args.root or os.path.dirname(os.path.abspath(args.recipe)) or "."
-    run(rec, root, args.out or root, {v: True for v in args.variant}, args.debug)
+    run(rec, root, args.out or root, {v: True for v in args.variant}, args.debug,
+        plan_path=args.plan, only_styles=args.styles, plan_only=args.plan_only)
 
 
 if __name__ == "__main__":

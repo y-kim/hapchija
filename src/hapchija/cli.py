@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import multiprocessing
 import shutil
 import subprocess
 import sys
@@ -29,31 +30,76 @@ def fontforge_available():
         return False
 
 
-def run_compose(recipe_path, root, out_dir, variants, debug):
-    """합성 단계를 돌린다. 바인딩이 없으면 fontforge 로 넘긴다."""
-    argv = ["--recipe", recipe_path, "--root", root, "--out", out_dir]
-    for name, on in variants.items():
-        if on:
-            argv += ["--variant", name]
-    if debug:
-        argv.append("--debug")
-
+def compose_command(argv):
+    """합성 단계를 실행할 명령. 바인딩이 없으면 fontforge 로 넘긴다."""
+    env = dict(os.environ)
+    pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
     if fontforge_available():
-        from . import compose
-        compose.main(argv)
-        return
-
+        return [sys.executable, "-m", "hapchija.compose"] + argv, env
     if not shutil.which("fontforge"):
         raise SystemExit(
             "ERROR: FontForge 를 찾을 수 없습니다.\n"
             "  파이썬 바인딩 (python3-fontforge) 이나 fontforge 명령이 필요합니다."
         )
-    # fontforge 안의 파이썬에서는 패키지가 안 보일 수 있으므로 경로를 넘겨 준다
-    env = dict(os.environ)
-    pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
-    subprocess.run(["fontforge", "-script", COMPOSE_MODULE] + argv,
-                   check=True, env=env)
+    return ["fontforge", "-script", COMPOSE_MODULE] + argv, env
+
+
+def run_compose(recipe_path, root, out_dir, variants, debug, jobs=1):
+    """합성 단계를 돌린다.
+
+    두께는 서로 독립적이라 병렬로 만들 수 있다. 다만 코드포인트 배분과 폭
+    분류는 두께와 무관하게 한 번만 하면 되므로, 먼저 계산해 파일로 남기고
+    (--plan-only) 워커들이 그것을 읽어 쓴다. FontForge 는 fork 안전을 보장하지
+    않으므로 스레드가 아니라 프로세스로 나눈다.
+    """
+    base = ["--recipe", recipe_path, "--root", root, "--out", out_dir]
+    for name, on in variants.items():
+        if on:
+            base.append("--variant")
+            base.append(name)
+    if debug:
+        base.append("--debug")
+
+    rec = R.load(recipe_path)
+    styles = [s["file"] for s in R.styles_for(rec, debug)]
+    if jobs <= 1 or len(styles) <= 1:
+        cmd, env = compose_command(base)
+        subprocess.run(cmd, check=True, env=env)
+        return
+
+    plan = os.path.join(out_dir, ".plan.json")
+    cmd, env = compose_command(base + ["--plan", plan, "--plan-only"])
+    subprocess.run(cmd, check=True, env=env)
+
+    # 두께를 워커 수만큼 갈라 준다
+    chunks = [styles[i::jobs] for i in range(jobs)]
+    chunks = [c for c in chunks if c]
+    print("### 두께 %d개를 %d개 프로세스로 ###" % (len(styles), len(chunks)))
+    procs = []
+    for i, chunk in enumerate(chunks):
+        cmd, env = compose_command(base + ["--plan", plan, "--styles", ",".join(chunk)])
+        log = open(os.path.join(out_dir, ".worker-%d.log" % i), "w")
+        procs.append((subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT),
+                      log, chunk))
+    failed = []
+    for pr, log, chunk in procs:
+        rc = pr.wait()
+        log.close()
+        print("  [%s] %s" % ("완료" if rc == 0 else "실패 rc=%d" % rc, " ".join(chunk)))
+        if rc != 0:
+            failed.append(chunk)
+    for i in range(len(chunks)):
+        path = os.path.join(out_dir, ".worker-%d.log" % i)
+        if failed:
+            print("--- 워커 %d 로그 ---" % i)
+            with open(path, encoding="utf-8", errors="replace") as fp:
+                print("".join(fp.readlines()[-25:]))
+        os.remove(path)
+    if os.path.exists(plan):
+        os.remove(plan)
+    if failed:
+        raise SystemExit("ERROR: 합성 실패")
 
 
 def variants_of(rec):
@@ -197,7 +243,7 @@ def cmd_build(args):
     for name, prefix in wanted:
         print("### Build: %s ###" % name)
         variants = {} if name == "standard" else {name: True}
-        run_compose(recipe_path, root, root, variants, args.debug)
+        run_compose(recipe_path, root, root, variants, args.debug, jobs=args.jobs)
         finalize.run(rec, root, variants, args.debug)
         dest, moved = move_output(root, prefix, build_dir)
         print("-> %s (%d 개)" % (os.path.relpath(dest, root), moved))
@@ -231,6 +277,9 @@ def main(argv=None):
     p.add_argument("--variant", action="append", help="만들 변종. 기본은 전부")
     p.add_argument("--debug", action="store_true",
                    default=os.environ.get("DEBUG") == "1")
+    p.add_argument("-j", "--jobs", type=int,
+                   default=int(os.environ.get("JOBS") or 0) or max(1, multiprocessing.cpu_count() - 1),
+                   help="동시에 만들 두께 수 (기본: CPU 수 - 1)")
     p.set_defaults(func=cmd_build)
 
     args = parser.parse_args(argv)
