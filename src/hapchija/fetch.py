@@ -112,7 +112,11 @@ def extract(archive, rules, src_dir):
             if not hits:
                 print(f"  경고: 맞는 파일이 없습니다: {pat}", file=sys.stderr)
             for name in hits:
-                out = os.path.join(to, os.path.basename(name))
+                # 'as' 는 여러 압축 파일에서 같은 이름(LICENSE.txt 등)이 나올 때
+                # 덮어쓰지 않도록 이름을 바꿔 준다. 하나만 꺼낼 때 쓴다.
+                base = rule["as"] if rule.get("as") and len(hits) == 1 \
+                    else os.path.basename(name)
+                out = os.path.join(to, base)
                 with z.open(name) as fin, open(out, "wb") as fout:
                     shutil.copyfileobj(fin, fout)
                 n += 1
