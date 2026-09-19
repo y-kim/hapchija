@@ -83,9 +83,19 @@ def build_source(ctx, source, shared, keep_cps=None):
 
     # 이 소스에 배정된 코드포인트만 남긴다. 우선순위가 높은 소스가 가져간 것은
     # 여기서 비워야 병합 결과에 같은 글자의 글리프가 쌓이지 않는다.
+    #
+    # 유니코드가 없는 글리프도 같이 비운다. CJK 글꼴은 세로쓰기 변형 같은 것을
+    # 수천 개씩 들고 있는데 (IBM Plex Sans JP 는 7,363 개), cmap 으로 닿을 수 없는데도
+    # 병합 결과의 글리프 수만 늘린다. 뼈대(role=base)는 합자 등에 쓰일 수 있으므로
+    # 그대로 둔다.
     if keep_cps is not None:
+        drop_unencoded = source.get("role") != "base"
         for glyph in font.glyphs():
-            if glyph.unicode is not None and glyph.unicode >= 0 and glyph.unicode not in keep_cps:
+            code = glyph.unicode
+            if code is None or code < 0:
+                if drop_unencoded:
+                    glyph.clear()
+            elif code not in keep_cps:
                 glyph.clear()
 
     source_half = font[0x20].width if 0x20 in font else None
