@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 
 from fontTools.merge import Merger
 from fontTools.ttLib import TTFont
@@ -80,6 +81,35 @@ def drop_codepoints(font, codepoints):
             table.cmap.pop(code, None)
 
 
+def map_canonical(font, ranges):
+    """정준 분해 대상이 있는 코드포인트를 같은 글리프에 연결한다.
+
+    호환한자(U+F900-FAFF)는 같은 한자의 다른 독음을 유니코드가 따로 부호화한
+    것이라 자형은 통합한자 쪽과 같다. 소스 글꼴이 이 영역을 안 갖고 있어도
+    정준 분해 대상 글리프는 갖고 있으므로 cmap 만 연결해 주면 된다.
+
+    KS X 1001 은 이 영역의 246 자를 포함하므로, 연결하지 않으면 한국어 표준
+    한자 집합을 다 덮지 못한다.
+    """
+    cmap = font.getBestCmap()
+    tables = [t for t in font["cmap"].tables if t.isUnicode()]
+    added = 0
+    for pair in ranges:
+        for code in range(int(pair[0], 16), int(pair[1], 16) + 1):
+            if code in cmap:
+                continue
+            dec = unicodedata.decomposition(chr(code))
+            if not dec or " " in dec.strip():
+                continue                     # 정준 단일 분해만 다룬다
+            name = cmap.get(int(dec, 16))
+            if not name:
+                continue
+            for t in tables:
+                t.cmap[code] = name
+            added += 1
+    return added
+
+
 def fix_tables(rec, path, style):
     fin = rec["finalize"]
     cfg = fin.get("os2", {})
@@ -87,6 +117,11 @@ def fix_tables(rec, path, style):
     font = TTFont(path, recalcBBoxes=False, recalcTimestamp=False)
 
     drop_codepoints(font, [R.cp(c) for c in fin.get("removeCodepoints", [])])
+
+    if fin.get("mapCanonical"):
+        n = map_canonical(font, fin["mapCanonical"].get("ranges", []))
+        if n:
+            print("  정준 등가 연결: %d자" % n)
 
     os2 = font["OS/2"]
     if "xAvgCharWidth" in cfg:
