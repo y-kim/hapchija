@@ -103,18 +103,26 @@ def run_compose(recipe_path, root, out_dir, variants, debug, jobs=1):
 
 
 def variants_of(rec):
-    """만들 변종 목록. (이름, 출력 접두어)"""
+    """만들 변종 목록.
+
+    (변종 이름, 파일 접두어, 출력 디렉터리 이름) 을 돌려준다.
+    디렉터리는 글꼴 가족 이름 그대로 쓴다. 글꼴을 설치할 때 고르기 쉽도록
+    파일 이름(공백 없음)이 아니라 사람이 보는 이름을 쓴다.
+    """
     out = []
+    seen = set()
     for source in rec["sources"]:
         when = source.get("when")
-        if when and when not in [v[0] for v in out]:
-            out.append((when, R.family_short(rec, R.variant_suffix(rec, {when: True}))))
-    out.append(("standard", R.family_short(rec)))
+        if when and when not in seen:
+            seen.add(when)
+            suffix = R.variant_suffix(rec, {when: True})
+            out.append((when, R.family_short(rec, suffix), R.family_name(rec, suffix)))
+    out.append(("standard", R.family_short(rec), R.family_name(rec)))
     return out
 
 
-def move_output(root, prefix, build_dir):
-    dest = os.path.join(build_dir, prefix)
+def move_output(root, prefix, build_dir, dir_name):
+    dest = os.path.join(build_dir, dir_name)
     os.makedirs(dest, exist_ok=True)
     moved = 0
     for path in glob.glob(os.path.join(root, prefix + "-*.ttf")):
@@ -123,14 +131,14 @@ def move_output(root, prefix, build_dir):
     return dest, moved
 
 
-def check(rec, build_dir, prefixes, debug):
+def check(rec, build_dir, families, debug):
     from fontTools.ttLib import TTFont
 
     styles = R.styles_for(rec, debug)
     expected, missing = [], []
-    for prefix in prefixes:
+    for prefix, dir_name in families:
         for style in styles:
-            path = os.path.join(build_dir, prefix, "%s-%s.ttf" % (prefix, style["file"]))
+            path = os.path.join(build_dir, dir_name, "%s-%s.ttf" % (prefix, style["file"]))
             expected.append(path)
             if not os.path.isfile(path):
                 missing.append(path)
@@ -244,20 +252,20 @@ def cmd_build(args):
     work = os.path.join(root, rec.get("workDir", "work"))
     os.makedirs(work, exist_ok=True)
 
-    prefixes = []
-    for name, prefix in wanted:
+    families = []
+    for name, prefix, dir_name in wanted:
         print("### Build: %s ###" % name)
         variants = {} if name == "standard" else {name: True}
         run_compose(recipe_path, root, work, variants, args.debug, jobs=args.jobs)
         finalize.run(rec, work, variants, args.debug)
-        dest, moved = move_output(work, prefix, build_dir)
+        dest, moved = move_output(work, prefix, build_dir, dir_name)
         print("-> %s (%d 개)" % (os.path.relpath(dest, root), moved))
-        prefixes.append(prefix)
+        families.append((prefix, dir_name))
 
     shutil.rmtree(work, ignore_errors=True)
 
     print("### Checking generated fonts ###")
-    rc = check(rec, build_dir, prefixes, args.debug)
+    rc = check(rec, build_dir, families, args.debug)
     print("### Build OK ###" if rc == 0 else "### Build FAILED ###")
     return rc
 
