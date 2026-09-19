@@ -109,6 +109,28 @@ def build_source(ctx, source, shared, keep_cps=None):
     return font
 
 
+def subset_part(path, codepoints):
+    """부품을 배정된 코드포인트만 남기고 잘라낸다.
+
+    FontForge 의 glyph.clear() 는 윤곽만 비우고 cmap 항목은 남긴다. 빈 글리프가
+    그대로 병합되면 글리프 수가 줄지 않아 TrueType 의 상한을 넘긴다.
+    fontTools 로 확실히 잘라낸다.
+    """
+    from fontTools import subset
+
+    o = subset.Options()
+    o.drop_tables += ["vhea", "vmtx", "VORG", "cvt ", "fpgm", "prep", "DSIG", "meta"]
+    o.layout_features = []
+    o.notdef_outline = False
+    o.recalc_bounds = False
+    o.glyph_names = True
+    f = subset.load_font(path, o)
+    ss = subset.Subsetter(options=o)
+    ss.populate(unicodes=sorted(codepoints))
+    ss.subset(f)
+    subset.save_font(f, path, o)
+
+
 def font_names(rec, style, suffix):
     """RIBBI 네 칸에 들어가는 두께와 그렇지 않은 두께를 나눠 이름을 만든다.
 
@@ -223,6 +245,7 @@ def run(rec, root, out_dir, variants, debug=False):
             print("Save " + os.path.basename(part))
             font.generate(part)
             font.close()
+            subset_part(part, assigned[source["id"]])
 
     for style in styles:
         print("=== %s ===" % style["file"])
@@ -240,6 +263,7 @@ def run(rec, root, out_dir, variants, debug=False):
             print("Save " + os.path.basename(part))
             font.generate(part)
             font.close()
+            subset_part(part, assigned[source["id"]])
 
     print("compose: done")
 
