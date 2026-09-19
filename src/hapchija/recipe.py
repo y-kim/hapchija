@@ -73,14 +73,29 @@ class Context:
         """소스 경로. {...} 에는 styles 항목의 필드 이름을 쓴다."""
         return os.path.join(self.src_dir, template.format(**(style or self.style)))
 
-    def width_value(self, name, source_half=None):
-        if name == "half":
+    def width_value(self, spec, source_half=None):
+        """폭 지정을 실제 값으로.
+
+            "half" / "full" / "source-half"   이름
+            {"emDiv": 3}                      전각을 n 으로 나눈 값
+            352                               유닛 값 그대로
+
+        emDiv 는 공백 문자에 쓴다. EM SPACE 를 전각으로 두면 THREE-PER-EM 은
+        그 1/3 이어야 하는데, 전각 폭이 바뀌어도 따라가도록 분모로 적는다.
+        """
+        if isinstance(spec, (int, float)):
+            return spec
+        if isinstance(spec, dict):
+            if "emDiv" in spec:
+                return round(self.full_width / spec["emDiv"])
+            raise ValueError("알 수 없는 폭 지정: %r" % spec)
+        if spec == "half":
             return self.half_width
-        if name == "full":
+        if spec == "full":
             return self.full_width
-        if name == "source-half":
+        if spec == "source-half":
             return source_half
-        raise ValueError("알 수 없는 폭 이름: %r" % name)
+        raise ValueError("알 수 없는 폭 이름: %r" % spec)
 
 
 def ribbi_flags(style):
