@@ -17,7 +17,39 @@ import fontforge
 from . import fits, ops, recipe as R
 
 
-def build_source(ctx, source, shared, base_cps=None):
+def available_codepoints(ctx, source, style):
+    """이 소스가 내놓을 수 있는 코드포인트. keepRanges 가 있으면 그 범위로 제한한다."""
+    path = ctx.path(source["path"], style)
+    font = fontforge.open(path)
+    cps = ops.codepoints_of(font)
+    font.close()
+    if source.get("keepRanges"):
+        keep = set()
+        for pair in source["keepRanges"]:
+            keep.update(R.cp_range(pair))
+        cps &= keep
+    return cps
+
+
+def assign_codepoints(ctx, sources, style):
+    """우선순위대로 코드포인트를 나눠 준다.
+
+    앞선 소스가 이미 가진 코드포인트는 뒤 소스에서 뺀다. 이렇게 하지 않으면
+    병합할 때 같은 글자의 글리프가 소스 수만큼 쌓여서, cmap 이 하나만 쓰는데도
+    TrueType 의 글리프 수 상한(65,535)을 넘긴다.
+    """
+    assigned, claimed = {}, set()
+    for source in sources:
+        cps = available_codepoints(ctx, source, style)
+        mine = cps - claimed
+        assigned[source["id"]] = mine
+        claimed |= mine
+        print("  %-6s 보유 %6d  신규 %6d  누적 %6d"
+              % (source["id"], len(cps), len(mine), len(claimed)))
+    return assigned
+
+
+def build_source(ctx, source, shared, keep_cps=None):
     path = ctx.path(source["path"])
     print("Open " + path)
     font = fontforge.open(path)
@@ -49,10 +81,11 @@ def build_source(ctx, source, shared, base_cps=None):
         font.italicize(italic_angle=ctx.italic_angle)
         font.selection.none()
 
-    # 우선순위가 높은 소스가 이미 가진 코드포인트는 지운다
-    if base_cps:
+    # 이 소스에 배정된 코드포인트만 남긴다. 우선순위가 높은 소스가 가져간 것은
+    # 여기서 비워야 병합 결과에 같은 글자의 글리프가 쌓이지 않는다.
+    if keep_cps is not None:
         for glyph in font.glyphs():
-            if glyph.unicode is not None and glyph.unicode in base_cps:
+            if glyph.unicode is not None and glyph.unicode >= 0 and glyph.unicode not in keep_cps:
                 glyph.clear()
 
     source_half = font[0x20].width if 0x20 in font else None
@@ -158,22 +191,24 @@ def run(rec, root, out_dir, variants, debug=False):
     parts_dir = os.path.join(out_dir, "parts")
     os.makedirs(parts_dir, exist_ok=True)
 
-    # 기준 소스가 가진 코드포인트를 미리 구한다. 뒤 소스에서 겹치는 것을 지우는 데 쓴다.
-    print("=== 기준 소스 훑기 ===")
+    # 우선순위대로 코드포인트를 배분한다
+    print("=== 코드포인트 배분 ===")
     ref_ctx = R.Context(rec, styles[0], root, variants)
-    probe = build_source(ref_ctx, base_source, {})
-    base_cps = ops.codepoints_of(probe)
-    probe.close()
+    assigned = assign_codepoints(ref_ctx, sources, styles[0])
+    base_cps = assigned[base_source["id"]]
 
     shared = {}
     for source in sources:
         if source.get("fit", {}).get("mode") == "cjkClassify":
-            shared["widths"] = fits.classify_widths(ref_ctx, source, styles[0], base_cps)
+            others = set().union(*(v for k, v in assigned.items() if k != source["id"])) \
+                if len(assigned) > 1 else set()
+            shared["widths"] = fits.classify_widths(
+                ref_ctx, source, styles[0], others - assigned[source["id"]])
 
     # 심볼 소스는 두께와 무관하므로 한 번만 만든다
     for source in sources:
         if source.get("role") == "symbols":
-            font = build_source(ref_ctx, source, shared, base_cps)
+            font = build_source(ref_ctx, source, shared, assigned[source["id"]])
             part = os.path.join(parts_dir, "%s.ttf" % source["id"])
             print("Save " + os.path.basename(part))
             font.generate(part)
@@ -183,14 +218,14 @@ def run(rec, root, out_dir, variants, debug=False):
         print("=== %s ===" % style["file"])
         ctx = R.Context(rec, style, root, variants)
 
-        base_font = build_source(ctx, base_source, shared)
+        base_font = build_source(ctx, base_source, shared, assigned[base_source["id"]])
         compose(ctx, base_font, suffix, out_dir)
         base_font.close()
 
         for source in sources:
             if source is base_source or source.get("role") == "symbols":
                 continue
-            font = build_source(ctx, source, shared, base_cps)
+            font = build_source(ctx, source, shared, assigned[source["id"]])
             part = os.path.join(parts_dir, "%s-%s.ttf" % (source["id"], style["file"]))
             print("Save " + os.path.basename(part))
             font.generate(part)
