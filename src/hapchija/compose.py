@@ -271,6 +271,20 @@ def run(rec, root, out_dir, variants, debug=False,
                            "widths": [sorted(x) for x in shared["widths"]]
                                      if "widths" in shared else None}, fp)
             print("배분 결과 저장: " + os.path.basename(plan_path))
+    # 심볼 부품은 두께와 무관하므로 한 번만 만든다. 병렬로 돌 때는 부모가
+    # 만들어 둔다. 워커들이 같은 경로에 동시에 쓰면 반쯤 쓰인 파일이 생긴다.
+    is_worker = bool(plan_path) and not plan_only
+    if not is_worker:
+        for source in sources:
+            if source.get("role") == "symbols":
+                part = os.path.join(parts_dir, "%s.ttf" % source["id"])
+                if os.path.exists(part):
+                    continue
+                font = build_source(ref_ctx, source, shared, assigned[source["id"]])
+                print("Save " + os.path.basename(part))
+                font.generate(part)
+                font.close()
+                subset_part(part, assigned[source["id"]])
     if plan_only:
         return
 
@@ -278,18 +292,6 @@ def run(rec, root, out_dir, variants, debug=False,
         want = set(only_styles.split(","))
         styles = [s for s in styles if s["file"] in want]
     base_cps = assigned[base_source["id"]]
-
-    # 심볼 소스는 두께와 무관하므로 한 번만 만든다
-    for source in sources:
-        if source.get("role") == "symbols":
-            part = os.path.join(parts_dir, "%s.ttf" % source["id"])
-            if os.path.exists(part):
-                continue
-            font = build_source(ref_ctx, source, shared, assigned[source["id"]])
-            print("Save " + os.path.basename(part))
-            font.generate(part)
-            font.close()
-            subset_part(part, assigned[source["id"]])
 
     for style in styles:
         print("=== %s ===" % style["file"])
