@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hapchija"
+version = "0.1.0"
+description = "레시피대로 여러 글꼴을 하나로 합치는 도구"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Kim Yangsu", email = "y.kim@snu.ac.kr" }]
+keywords = ["font", "fontforge", "fonttools", "cjk", "monospace"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Text Processing :: Fonts",
+]
+
+# FontForge 와 ttfautohint 는 pip 로 설치할 수 없다. README 를 참고할 것.
+dependencies = ["fonttools>=4.40"]
+
+[project.urls]
+Homepage = "https://github.com/y-kim/hapchija"
+
+[project.scripts]
+hapchija = "hapchija.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

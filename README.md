@@ -1,0 +1,127 @@
+# hapchija (합치자)
+
+레시피 하나로 여러 글꼴을 하나로 합치는 도구입니다. 라틴 고정폭에 한글이나
+일본어를 얹어 프로그래밍용 글꼴을 만드는 데 씁니다.
+
+[Monoplex KR](https://github.com/y-kim/monoplex)의 빌드 스크립트에서 갈라져
+나왔습니다. 그쪽은 IBM Plex Mono + IBM Plex Sans KR 전용이었는데, 무엇을 어떻게
+합칠지를 JSON 레시피로 빼서 다른 조합에도 쓸 수 있게 했습니다.
+
+## 필요한 것
+
+pip 으로 설치되지 않는 것이 둘 있습니다.
+
+| | 쓰임 | 설치 |
+|---|---|---|
+| FontForge | 글리프 합성 | `apt install fontforge python3-fontforge` / `pacman -S fontforge` |
+| ttfautohint | 힌팅 (레시피가 쓸 때만) | 배포판 패키지 또는 AUR |
+
+FontForge 는 파이썬 바인딩이 있으면 그대로 쓰고, 없으면 `fontforge -script` 로
+넘겨서 씁니다.
+
+Docker 를 쓰면 둘 다 들어 있는 이미지가 있습니다.
+
+```bash
+docker run --rm -v "$(pwd):/work" ghcr.io/yuru7/composite-font-builder \
+  bash -c "cd /work && PYTHONPATH=tools/src python3 -m hapchija build --recipe recipes/foo.json"
+```
+
+## 설치
+
+```bash
+pip install git+https://github.com/y-kim/hapchija     # 그냥 쓰기
+pip install -e ./tools                                # 서브모듈로 두고 고쳐 쓰기
+PYTHONPATH=tools/src python3 -m hapchija              # 설치 없이
+```
+
+## 쓰기
+
+```bash
+hapchija list                                  # 레시피 목록
+hapchija build --recipe recipes/foo.json       # 전체 빌드
+hapchija build --recipe recipes/foo.json --debug          # 한 두께만
+hapchija build --recipe recipes/foo.json --variant nerd   # 특정 변종만
+```
+
+## 레시피
+
+레시피 하나가 글꼴 하나를 정의합니다.
+
+```json
+{
+  "target":  { "em": {"ascent": 880, "descent": 120},
+               "vertical": {"ascent": 950, "descent": 225, "typoLineGap": 80},
+               "halfWidth": 528, "panose": {...} },
+  "styles":  [ {"name": "Regular", "file": "Regular", "weight": 400,
+                "panoseWeight": 5, "italic": false} ],
+  "sources": [
+    {"id": "latin", "role": "base",    "path": "Plex-{monoSrc}.ttf", "fit": {...}},
+    {"id": "kr",    "role": "cjk",     "path": "Sans-{krSrc}.ttf",   "fit": {...}},
+    {"id": "nerd",  "role": "symbols", "path": "Nerd.ttf", "when": "nerd"}
+  ],
+  "finalize": { "hinting": [...], "os2": {...} }
+}
+```
+
+핵심은 `sources` 입니다.
+
+- **우선순위 순서**입니다. 앞선 소스가 같은 코드포인트를 이깁니다.
+  라틴 + 한글 + 일본어처럼 셋 이상도 됩니다.
+- `role: base` 인 소스가 최종 글꼴의 뼈대가 됩니다. 힌팅도 여기에만 들어갑니다.
+- `when` 이 붙은 소스는 그 변종을 만들 때만 포함됩니다.
+- `path` 의 `{...}` 에는 `styles` 항목의 필드 이름을 씁니다.
+- 소스의 `upem` 이 달라도 `target.em` 으로 자동 정규화됩니다. 2048 짜리 글꼴을
+  1000 짜리와 섞어도 됩니다.
+
+### fit — 소스를 목표 폭에 맞추는 방법
+
+| 모드 | 언제 |
+|---|---|
+| `halfScale` | 라틴 고정폭·심볼. 일정 비율로 줄이고 반각 폭에 맞춥니다 |
+| `cjkUniform` | CJK 소스의 전각 폭이 한 가지로 통일된 경우 (맑은 고딕 등) |
+| `cjkClassify` | 글리프마다 폭이 제각각인 경우 (IBM Plex Sans KR 등) |
+
+### ops — 글리프 단위 조작
+
+`preOps` → (참조 해제, em 정규화) → `ops` → `fit` → `opsAfter` 순서로 돕니다.
+`preOps` 는 참조를 풀기 전에 도는데, 합성 글리프(ŕ 등)가 교체 대상을 참조로
+물고 있을 때 필요합니다.
+
+| op | 하는 일 |
+|---|---|
+| `scale` / `rotate` | bbox 중심 기준 변환 |
+| `scaleOrigin` | 원점 기준 변환 |
+| `translate` / `setWidth` / `clear` | 이동 / 폭 지정 / 비우기 |
+| `mergeSfd` | 손질한 글리프를 담은 `.sfd` 를 합칩니다 |
+| `removeLookups` | 커닝 등 GPOS lookup 제거 |
+| `fitLineBox` | Powerline 구분자를 행 박스 전체에 맞춥니다 |
+
+## 구조
+
+| 파일 | 역할 |
+|---|---|
+| `cli.py` | 명령. 두 단계를 부르고 결과를 검증 |
+| `compose.py` | 합성 단계. FontForge 필요 |
+| `finalize.py` | 마무리 단계. 힌팅·병합·테이블 수정. fontTools 만 필요 |
+| `ops.py` / `fits.py` / `recipe.py` | 글리프 조작 / 폭 맞춤 / 레시피 |
+
+## 옮길 때 주의할 것
+
+FontForge 의 `.pe` 스크립트에서 옮겨 온 코드라, 변환 의미가 미묘하게 다릅니다.
+고칠 때 알아 두면 좋습니다.
+
+- `Scale(s)` 와 `Rotate(a)` 는 중심 인자를 생략하면 원점이 아니라 **글리프의
+  bounding box 중심**이 기준입니다.
+- `Italic(a)` 는 단순 기울이기가 아니라 FontForge 전용 변환입니다.
+  `font.italicize(italic_angle=a)` 를 불러야 같은 결과가 나옵니다.
+- `transform` 은 **advance width 도 같이 옮깁니다.** 폭을 지키려면 되돌려야 합니다.
+- 세로 메트릭은 FontForge 에서 넣어도 `mergeFonts` 와 `generate` 가 윤곽을 보고
+  다시 계산합니다. 그래서 `finalize` 에서 확정합니다.
+
+## 라이선스
+
+MIT. [PlemolJP](https://github.com/yuru7/PlemolJP) 의 생성 스크립트에서
+출발했고 그쪽도 MIT 입니다.
+
+합성 **결과물**의 라이선스는 소스 글꼴을 따릅니다. 독점 글꼴을 합쳤다면
+결과물도 배포할 수 없습니다.
