@@ -25,18 +25,49 @@ def range_set(pairs):
     return out
 
 
-def available_codepoints(ctx, source, style):
+def merged_codepoints(ctx, source, styles):
+    """mergeSfd 로 들어올 코드포인트.
+
+    소스 파일에는 없고 병합으로 비로소 생기는 글리프가 있다. 박스 드로잉이
+    그렇다. 반각으로 손질한 160 자가 Box_Drawing_half.sfd 에 있는데
+    IBM Plex Sans KR 자신은 69 자만 갖는다. 배정 단계가 파일만 보면 나머지
+    91 자는 어느 소스에도 배정되지 않고, 병합해 놓고도 잘라 낼 때 사라진다.
+    """
+    cps = set()
+    for stage in ("preOps", "ops", "opsAfter"):
+        for spec in source.get(stage) or []:
+            if spec.get("op") != "mergeSfd":
+                continue
+            for style in styles:
+                path = ctx.path(spec["from"], style)
+                if not os.path.exists(path):
+                    continue
+                font = fontforge.open(path)
+                cps |= ops.codepoints_of(font)
+                font.close()
+    return cps
+
+
+def available_codepoints(ctx, source, styles):
     """이 소스가 내놓을 수 있는 코드포인트.
 
     keepRanges 가 있으면 그 범위로 제한하고, dropRanges 는 빼낸다.
     dropRanges 는 사용자 정의 영역(PUA)을 막는 데 쓴다. CJK 글꼴은 벤더 내부용
     글리프를 PUA 에 수천 개씩 넣어 두는데 (IBM Plex Sans TC 는 4,729 자),
     합성 결과에 노출될 이유가 없고 Nerd Fonts 영역과 정면으로 부딪친다.
+
+    굵기 전체의 합집합을 본다. 한 굵기만 보면, 그 굵기에 없는 글자를 이
+    소스가 못 내놓는 것으로 판정해 뒤 소스에게도 넘기지 않으므로, 한
+    굵기의 결손이 열여섯 굵기 전부로 번진다. IBM Plex Sans KR 1.002 는
+    Thin 에만 57 자(반각 한글 자모 등)가 없다. 배정만 합집합으로 하면
+    되고, 실제로 그 글자가 없는 굵기는 잘라 낼 때 자연히 빠진다.
     """
-    path = ctx.path(source["path"], style)
-    font = fontforge.open(path)
-    cps = ops.codepoints_of(font)
-    font.close()
+    cps = set()
+    for path in sorted({ctx.path(source["path"], s) for s in styles}):
+        font = fontforge.open(path)
+        cps |= ops.codepoints_of(font)
+        font.close()
+    cps |= merged_codepoints(ctx, source, styles)
     if source.get("keepRanges"):
         cps &= range_set(source["keepRanges"])
     if source.get("dropRanges"):
@@ -44,7 +75,7 @@ def available_codepoints(ctx, source, style):
     return cps
 
 
-def assign_codepoints(ctx, sources, style):
+def assign_codepoints(ctx, sources, styles):
     """우선순위대로 코드포인트를 나눠 준다.
 
     앞선 소스가 이미 가진 코드포인트는 뒤 소스에서 뺀다. 이렇게 하지 않으면
@@ -53,7 +84,7 @@ def assign_codepoints(ctx, sources, style):
     """
     assigned, claimed = {}, set()
     for source in sources:
-        cps = available_codepoints(ctx, source, style)
+        cps = available_codepoints(ctx, source, styles)
         mine = cps - claimed
         assigned[source["id"]] = mine
         claimed |= mine
@@ -257,7 +288,7 @@ def run(rec, root, out_dir, variants, debug=False,
             shared["widths"] = tuple(set(x) for x in plan["widths"])
     else:
         print("=== 코드포인트 배분 ===")
-        assigned = assign_codepoints(ref_ctx, sources, styles[0])
+        assigned = assign_codepoints(ref_ctx, sources, styles)
         shared = {}
         for source in sources:
             if source.get("fit", {}).get("mode") == "cjkClassify":
