@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 
-from . import finalize, recipe as R
+from . import fetch, finalize, recipe as R
 
 COMPOSE_MODULE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compose.py")
 
@@ -129,16 +129,55 @@ def cmd_list(args):
     return 0
 
 
+def resolve(args):
+    """레시피 경로와 root 를 정한다. root 는 소스와 출력의 기준 디렉터리다."""
+    path = os.path.abspath(args.recipe)
+    if not os.path.isfile(path):
+        print("ERROR: 레시피가 없습니다: %s" % path, file=sys.stderr)
+        return None, None, None
+    rec = R.load(path)
+    root = os.path.abspath(args.root) if args.root else os.path.dirname(os.path.dirname(path))
+    return path, rec, root
+
+
+def cmd_fetch(args):
+    path, rec, root = resolve(args)
+    if not rec:
+        return 2
+    return fetch.run(rec, root, force=args.force)
+
+
+def missing_sources(rec, root):
+    """레시피가 쓰는 소스 중 실제로 없는 파일."""
+    src_dir = os.path.join(root, rec.get("sourceDir", "source"))
+    out = []
+    for source in rec.get("sources", []):
+        for style in rec.get("styles", []):
+            try:
+                p = os.path.join(src_dir, source["path"].format(**style))
+            except KeyError:
+                continue
+            if not os.path.exists(p):
+                out.append(os.path.relpath(p, root))
+    return sorted(set(out))
+
+
 def cmd_build(args):
-    recipe_path = os.path.abspath(args.recipe)
-    if not os.path.isfile(recipe_path):
-        print("ERROR: 레시피가 없습니다: %s" % recipe_path, file=sys.stderr)
+    recipe_path, rec, root = resolve(args)
+    if not rec:
+        return 2
+    miss = missing_sources(rec, root)
+    if miss:
+        print("ERROR: 소스 글꼴이 없습니다 (%d개)" % len(miss), file=sys.stderr)
+        for p in miss[:6]:
+            print("  " + p, file=sys.stderr)
+        if len(miss) > 6:
+            print("  ... 외 %d개" % (len(miss) - 6), file=sys.stderr)
+        if rec.get("fetch"):
+            print("\n  먼저 받아 오세요:  hapchija fetch --recipe %s"
+                  % os.path.relpath(recipe_path), file=sys.stderr)
         return 2
 
-    rec = R.load(recipe_path)
-    # 소스와 출력은 레시피가 있는 곳 기준. --root 로 바꿀 수 있다.
-    root = os.path.abspath(args.root) if args.root else os.path.dirname(
-        os.path.dirname(recipe_path))
     build_dir = os.path.join(root, rec.get("build", {}).get("outputDir", "build"))
 
     wanted = variants_of(rec)
@@ -179,6 +218,12 @@ def main(argv=None):
     p.add_argument("--dir", default="recipes")
     p.set_defaults(func=cmd_list)
 
+    p = sub.add_parser("fetch", help="레시피가 선언한 소스 글꼴을 받아온다")
+    p.add_argument("--recipe", default=os.environ.get("RECIPE"))
+    p.add_argument("--root", default=None)
+    p.add_argument("--force", action="store_true", help="이미 있어도 다시 받는다")
+    p.set_defaults(func=cmd_fetch)
+
     p = sub.add_parser("build", help="레시피대로 빌드")
     p.add_argument("--recipe", default=os.environ.get("RECIPE"))
     p.add_argument("--root", default=None,
@@ -192,7 +237,7 @@ def main(argv=None):
     if not getattr(args, "cmd", None):
         parser.print_help()
         return 2
-    if args.cmd == "build" and not args.recipe:
+    if args.cmd in ("build", "fetch") and not args.recipe:
         print("ERROR: --recipe 가 필요합니다", file=sys.stderr)
         return 2
     return args.func(args)
