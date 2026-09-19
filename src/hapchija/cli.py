@@ -239,15 +239,22 @@ def cmd_build(args):
     print("root   : %s" % root)
     print("variant: %s" % ", ".join(v[0] for v in wanted))
 
+    # 중간 산출물은 work/ 안에서 만든다. 저장소 루트에 만들면 빌드가 중간에
+    # 실패했을 때 ttf 가 그대로 남는다.
+    work = os.path.join(root, rec.get("workDir", "work"))
+    os.makedirs(work, exist_ok=True)
+
     prefixes = []
     for name, prefix in wanted:
         print("### Build: %s ###" % name)
         variants = {} if name == "standard" else {name: True}
-        run_compose(recipe_path, root, root, variants, args.debug, jobs=args.jobs)
-        finalize.run(rec, root, variants, args.debug)
-        dest, moved = move_output(root, prefix, build_dir)
+        run_compose(recipe_path, root, work, variants, args.debug, jobs=args.jobs)
+        finalize.run(rec, work, variants, args.debug)
+        dest, moved = move_output(work, prefix, build_dir)
         print("-> %s (%d 개)" % (os.path.relpath(dest, root), moved))
         prefixes.append(prefix)
+
+    shutil.rmtree(work, ignore_errors=True)
 
     print("### Checking generated fonts ###")
     rc = check(rec, build_dir, prefixes, args.debug)
