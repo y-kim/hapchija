@@ -67,11 +67,16 @@ class Context:
         self.half_width = target["halfWidth"]
         self.full_width = self.half_width * 2
         self.italic_angle = target.get("italicAngle", 0)
-        self.src_dir = os.path.join(root, recipe.get("sourceDir", "source"))
+        self.src_dirs = source_dirs(recipe, root)
+        self.src_dir = self.src_dirs[0]
 
     def path(self, template, style=None):
-        """소스 경로. {...} 에는 styles 항목의 필드 이름을 쓴다."""
-        return os.path.join(self.src_dir, template.format(**(style or self.style)))
+        """소스 경로. {...} 에는 styles 항목의 필드 이름을 쓴다.
+
+        sourceDir 와 fetchDir 를 순서대로 찾는다. 직접 만든 자산은 저장소에
+        두고, 받아온 글꼴은 따로 두기 위해서다.
+        """
+        return resolve(self.src_dirs, template.format(**(style or self.style)))
 
     def width_value(self, spec, source_half=None):
         """폭 지정을 실제 값으로.
@@ -109,3 +114,26 @@ def ribbi_flags(style):
     subfamily 가 서로 어긋나지 않는다.
     """
     return style["name"] == "Bold", bool(style.get("italic"))
+
+
+def source_dirs(recipe, root):
+    """소스를 찾을 디렉터리. 앞에서부터 찾는다.
+
+    sourceDir 에는 저장소가 들고 있는 자산(손질한 글리프 등)을,
+    fetchDir 에는 받아온 글꼴을 둔다. 둘을 나누면 저장소에 무엇이 우리 것이고
+    무엇이 남의 것인지 한눈에 보인다.
+    """
+    dirs = [os.path.join(root, recipe.get("sourceDir", "source"))]
+    fetch_dir = recipe.get("fetchDir")
+    if fetch_dir:
+        dirs.append(os.path.join(root, fetch_dir))
+    return dirs
+
+
+def resolve(dirs, relative):
+    """여러 디렉터리에서 먼저 찾아지는 것. 없으면 첫 번째 경로를 돌려준다."""
+    for d in dirs:
+        p = os.path.join(d, relative)
+        if os.path.exists(p):
+            return p
+    return os.path.join(dirs[0], relative)

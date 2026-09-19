@@ -170,9 +170,10 @@ def run(recipe, root, force=False):
         print("이 레시피에는 받아올 소스가 없습니다.")
         return 0
 
-    src_dir = os.path.join(root, recipe.get("sourceDir", "source"))
+    # 받아온 것은 fetchDir 에 둔다. 없으면 sourceDir 에 둔다.
+    src_dir = os.path.join(root, recipe.get("fetchDir") or recipe.get("sourceDir", "source"))
     os.makedirs(src_dir, exist_ok=True)
-    print(f"소스 디렉터리: {src_dir}")
+    print(f"받는 곳: {src_dir}")
     print(f"캐시: {cache_dir()}")
 
     for item in items:

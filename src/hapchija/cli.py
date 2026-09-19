@@ -195,12 +195,12 @@ def cmd_fetch(args):
 
 def missing_sources(rec, root):
     """레시피가 쓰는 소스 중 실제로 없는 파일."""
-    src_dir = os.path.join(root, rec.get("sourceDir", "source"))
+    dirs = R.source_dirs(rec, root)
     out = []
     for source in rec.get("sources", []):
         for style in rec.get("styles", []):
             try:
-                p = os.path.join(src_dir, source["path"].format(**style))
+                p = R.resolve(dirs, source["path"].format(**style))
             except KeyError:
                 continue
             if not os.path.exists(p):
