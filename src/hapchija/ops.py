@@ -64,11 +64,31 @@ def worth(glyph):
     return glyph.isWorthOutputting()
 
 
+def glyph_codepoints(glyph):
+    """글리프가 닿는 모든 코드포인트.
+
+    FontForge 는 주 유니코드 하나만 glyph.unicode 로 준다. CJK 글꼴에서는
+    한 글리프가 강희부수와 통합한자 양쪽에 매핑된 경우가 흔한데, 이때 주
+    유니코드가 부수 쪽(U+2F00 대)이고 정작 쓰이는 한자는 altuni 에 들어간다.
+    IBM Plex Sans JP 에서 大(U+5927) 는 주 유니코드가 U+2F24 이고 U+5927 은
+    altuni 다. altuni 를 보지 않으면 大 一 人 日 月 같은 기본 한자가 통째로
+    빠진다.
+    """
+    out = set()
+    if glyph.unicode is not None and glyph.unicode >= 0:
+        out.add(glyph.unicode)
+    for alt in (glyph.altuni or ()):
+        if alt[0] is not None and alt[0] >= 0:
+            out.add(alt[0])
+    return out
+
+
 def codepoints_of(font):
-    return {
-        g.unicode for g in font.glyphs()
-        if g.unicode is not None and g.unicode >= 0 and worth(g)
-    }
+    out = set()
+    for g in font.glyphs():
+        if worth(g):
+            out |= glyph_codepoints(g)
+    return out
 
 
 def set_em(font, ctx):

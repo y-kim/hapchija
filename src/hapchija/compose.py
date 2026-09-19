@@ -91,11 +91,11 @@ def build_source(ctx, source, shared, keep_cps=None):
     if keep_cps is not None:
         drop_unencoded = source.get("role") != "base"
         for glyph in font.glyphs():
-            code = glyph.unicode
-            if code is None or code < 0:
+            codes = ops.glyph_codepoints(glyph)
+            if not codes:
                 if drop_unencoded:
                     glyph.clear()
-            elif code not in keep_cps:
+            elif not (codes & keep_cps):
                 glyph.clear()
 
     source_half = font[0x20].width if 0x20 in font else None
