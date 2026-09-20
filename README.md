@@ -38,10 +38,24 @@ PYTHONPATH=tools/src python3 -m hapchija              # 설치 없이
 
 ```bash
 hapchija list                                  # 레시피 목록
+hapchija options --recipe recipes/foo.json     # 이 레시피가 -w/-s/--variant 에 받는 값
 hapchija build --recipe recipes/foo.json       # 전체 빌드
-hapchija build --recipe recipes/foo.json --debug          # 한 두께만
-hapchija build --recipe recipes/foo.json --variant nerd   # 특정 변종만
+hapchija build --recipe recipes/foo.json --quick                # Regular 하나만
+hapchija build --recipe recipes/foo.json -w 400,700 -s italic   # 두께와 기울임으로 고르기
+hapchija build --recipe recipes/foo.json --variant nerd         # 변종 골라 만들기
 ```
+
+두께(`-w`), 기울임(`-s`), 변종(`--variant`)은 서로 독립인 선택자입니다. 셋 다
+쉼표로 여러 개를 적을 수 있고, 안 적으면 전부 만듭니다.
+
+| | 받는 값 | `normal` 의 뜻 |
+|---|---|---|
+| `-w`, `--weight` | 숫자(400)나 레시피의 두께 이름(bold, text) | 400 |
+| `-s`, `--style` | `normal`, `italic` | 곧게 선 것 |
+| `--variant` | 레시피 소스의 `when` 이름(nerd) | 변종 없는 기본 빌드 |
+
+`--quick` 은 `-w normal -s normal` 의 줄임말입니다. 변종은 건드리지 않으니
+하나만 보려면 `--quick --variant normal` 처럼 같이 적습니다.
 
 ## 레시피
 

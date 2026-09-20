@@ -1,7 +1,13 @@
 """hapchija 명령.
 
     hapchija list
-    hapchija build --recipe recipes/foo.json [--debug] [--variant nerd]
+    hapchija options --recipe recipes/foo.json
+    hapchija build --recipe recipes/foo.json [-w 400,bold] [-s normal,italic]
+                   [--variant normal,nerd] [--quick]
+
+두께(-w), 기울임(-s), 변종(--variant)은 서로 독립인 선택자다. 셋 다 쉼표
+목록이고 비우면 전부다. normal 은 세 곳 모두에서 "기본"을 뜻하는 예약어다:
+400, 곧게 선 것, 변종 없는 빌드. --quick 은 -w normal -s normal 의 줄임말이다.
 
 합성 단계는 FontForge 의 Python 바인딩이 필요하다. 지금 인터프리터에서
 import 가 되면 그대로 쓰고, 안 되면 `fontforge -script` 로 돌려서 부른다.
@@ -45,8 +51,8 @@ def compose_command(argv):
     return ["fontforge", "-script", COMPOSE_MODULE] + argv, env
 
 
-def run_compose(recipe_path, root, out_dir, variants, debug, jobs=1):
-    """합성 단계를 돌린다.
+def run_compose(recipe_path, root, out_dir, variants, styles, jobs=1):
+    """합성 단계를 돌린다. styles 는 만들 스타일의 파일 이름 목록이다.
 
     두께는 서로 독립적이라 병렬로 만들 수 있다. 다만 코드포인트 배분과 폭
     분류는 두께와 무관하게 한 번만 하면 되므로, 먼저 계산해 파일로 남기고
@@ -58,18 +64,16 @@ def run_compose(recipe_path, root, out_dir, variants, debug, jobs=1):
         if on:
             base.append("--variant")
             base.append(name)
-    if debug:
-        base.append("--debug")
+    all_styles = ["--styles", ",".join(styles)]
 
-    rec = R.load(recipe_path)
-    styles = [s["file"] for s in R.styles_for(rec, debug)]
     if jobs <= 1 or len(styles) <= 1:
-        cmd, env = compose_command(base)
+        cmd, env = compose_command(base + all_styles)
         subprocess.run(cmd, check=True, env=env)
         return
 
+    # 배분은 고른 스타일 전체를 보고 한 번만 계산한다
     plan = os.path.join(out_dir, ".plan.json")
-    cmd, env = compose_command(base + ["--plan", plan, "--plan-only"])
+    cmd, env = compose_command(base + all_styles + ["--plan", plan, "--plan-only"])
     subprocess.run(cmd, check=True, env=env)
 
     # 두께를 워커 수만큼 갈라 준다
@@ -105,7 +109,8 @@ def run_compose(recipe_path, root, out_dir, variants, debug, jobs=1):
 def variants_of(rec):
     """만들 변종 목록.
 
-    (변종 이름, 파일 접두어, 출력 디렉터리 이름) 을 돌려준다.
+    (변종 이름, 파일 접두어, 출력 디렉터리 이름) 을 돌려준다. 변종 없는
+    기본 빌드는 normal 이라는 예약된 이름을 쓴다.
     디렉터리는 글꼴 가족 이름 그대로 쓴다. 글꼴을 설치할 때 고르기 쉽도록
     파일 이름(공백 없음)이 아니라 사람이 보는 이름을 쓴다.
     """
@@ -117,7 +122,7 @@ def variants_of(rec):
             seen.add(when)
             suffix = R.variant_suffix(rec, {when: True})
             out.append((when, R.family_short(rec, suffix), R.family_name(rec, suffix)))
-    out.append(("standard", R.family_short(rec), R.family_name(rec)))
+    out.append(("normal", R.family_short(rec), R.family_name(rec)))
     return out
 
 
@@ -131,10 +136,9 @@ def move_output(root, prefix, build_dir, dir_name):
     return dest, moved
 
 
-def check(rec, build_dir, families, debug):
+def check(rec, build_dir, families, styles):
     from fontTools.ttLib import TTFont
 
-    styles = R.styles_for(rec, debug)
     expected, missing = [], []
     for prefix, dir_name in families:
         for style in styles:
@@ -194,6 +198,54 @@ def resolve(args):
     return path, rec, root
 
 
+def weight_table(rec):
+    """레시피에 있는 두께를 (숫자, 이름) 으로, 가벼운 것부터."""
+    out = []
+    for style in rec["styles"]:
+        key = (style["weight"], style["name"].lower())
+        if key not in out:
+            out.append(key)
+    return sorted(out)
+
+
+def cmd_options(args):
+    """이 레시피가 build 의 -w / -s / --variant 에 받는 값을 보여 준다."""
+    recipe_path, rec, root = resolve(args)
+    if not rec:
+        return 2
+    styles = rec["styles"]
+    weights = weight_table(rec)
+    slants = [t for t in R.SLANTS if any(R.slant_matches(s, t) for s in styles)]
+
+    def weight_label(weight, name):
+        aliases = [a for a, v in R.WEIGHT_ALIASES.items() if v == weight]
+        return "%d %s" % (weight, name) + (" (= %s)" % ", ".join(aliases) if aliases else "")
+
+    print("recipe : %s (%s)" % (os.path.relpath(recipe_path), rec.get("name")))
+    print()
+    print("-w, --weight   " + ", ".join(weight_label(w, n) for w, n in weights))
+    print("-s, --style    " + ", ".join(slants))
+    print("--variant      " + ", ".join("%s (%s)" % (name, family)
+                                        for name, _, family in variants_of(rec)))
+    quick = R.select_styles(rec, ["normal"], ["normal"])
+    print("--quick        " + (", ".join(s["file"] for s in quick)
+                               if quick else "(400 두께가 없어 쓸 수 없음)"))
+    print()
+    print("스타일 %d개. 두께 × 기울임, 칸은 파일 이름." % len(styles))
+    label_width = max(len("%d %s" % (w, n)) for w, n in weights)
+    cell_width = max([len(c) for c in slants] + [len(s["file"]) for s in styles])
+    print("  %-*s  %s" % (label_width, "", "  ".join("%-*s" % (cell_width, c) for c in slants)))
+    for weight, name in weights:
+        cells = []
+        for slant in slants:
+            hit = [s for s in styles if s["weight"] == weight
+                   and s["name"].lower() == name and R.slant_matches(s, slant)]
+            cells.append(hit[0]["file"] if hit else "-")
+        print("  %-*s  %s" % (label_width, "%d %s" % (weight, name),
+                              "  ".join("%-*s" % (cell_width, c) for c in cells)))
+    return 0
+
+
 def cmd_fetch(args):
     path, rec, root = resolve(args)
     if not rec:
@@ -234,18 +286,36 @@ def cmd_build(args):
 
     build_dir = os.path.join(root, rec.get("build", {}).get("outputDir", "build"))
 
+    # 두께와 기울임. --quick 은 비어 있는 쪽을 normal 로 채운다.
+    weights = R.split_list(args.weight) or (["normal"] if args.quick else [])
+    slants = R.split_list(args.style) or (["normal"] if args.quick else [])
+    try:
+        styles = R.select_styles(rec, weights, slants)
+    except ValueError as exc:
+        print("ERROR: %s" % exc, file=sys.stderr)
+        return 2
+    if not styles:
+        print("ERROR: 두께 %s 에 스타일 %s 인 것이 레시피에 없습니다"
+              % (",".join(weights) or "*", ",".join(slants) or "*"), file=sys.stderr)
+        return 2
+
+    # 변종. 비우면 전부, normal 은 변종 없는 기본 빌드.
     wanted = variants_of(rec)
-    if args.debug:
-        wanted = [v for v in wanted if v[0] == "standard"]
-    if args.variant:
-        wanted = [v for v in wanted if v[0] in args.variant]
-        if not wanted:
-            print("ERROR: 그런 변종이 없습니다: %s" % args.variant, file=sys.stderr)
+    names = R.split_list(args.variant)
+    if names:
+        known = [v[0] for v in wanted]
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            print("ERROR: 그런 변종이 없습니다: %s" % ", ".join(unknown), file=sys.stderr)
+            print("  있는 변종: %s" % ", ".join(known), file=sys.stderr)
             return 2
+        wanted = [v for v in wanted if v[0] in names]
 
     print("recipe : %s (%s)" % (os.path.relpath(recipe_path), rec.get("name")))
     print("root   : %s" % root)
+    print("styles : %s (%d)" % (", ".join(s["file"] for s in styles), len(styles)))
     print("variant: %s" % ", ".join(v[0] for v in wanted))
+    files = [s["file"] for s in styles]
 
     # 중간 산출물은 work/ 안에서 만든다. 저장소 루트에 만들면 빌드가 중간에
     # 실패했을 때 ttf 가 그대로 남는다.
@@ -255,9 +325,9 @@ def cmd_build(args):
     families = []
     for name, prefix, dir_name in wanted:
         print("### Build: %s ###" % name)
-        variants = {} if name == "standard" else {name: True}
-        run_compose(recipe_path, root, work, variants, args.debug, jobs=args.jobs)
-        finalize.run(rec, work, variants, args.debug)
+        variants = {} if name == "normal" else {name: True}
+        run_compose(recipe_path, root, work, variants, files, jobs=args.jobs)
+        finalize.run(rec, work, variants, files)
         dest, moved = move_output(work, prefix, build_dir, dir_name)
         print("-> %s (%d 개)" % (os.path.relpath(dest, root), moved))
         families.append((prefix, dir_name))
@@ -265,7 +335,7 @@ def cmd_build(args):
     shutil.rmtree(work, ignore_errors=True)
 
     print("### Checking generated fonts ###")
-    rc = check(rec, build_dir, families, args.debug)
+    rc = check(rec, build_dir, families, styles)
     print("### Build OK ###" if rc == 0 else "### Build FAILED ###")
     return rc
 
@@ -279,6 +349,11 @@ def main(argv=None):
     p.add_argument("--dir", default="recipes")
     p.set_defaults(func=cmd_list)
 
+    p = sub.add_parser("options", help="레시피가 build 의 -w / -s / --variant 에 받는 값")
+    p.add_argument("--recipe", default=os.environ.get("RECIPE"))
+    p.add_argument("--root", default=None)
+    p.set_defaults(func=cmd_options)
+
     p = sub.add_parser("fetch", help="레시피가 선언한 소스 글꼴을 받아온다")
     p.add_argument("--recipe", default=os.environ.get("RECIPE"))
     p.add_argument("--root", default=None)
@@ -289,9 +364,15 @@ def main(argv=None):
     p.add_argument("--recipe", default=os.environ.get("RECIPE"))
     p.add_argument("--root", default=None,
                    help="소스와 출력의 기준 디렉터리 (기본: 레시피의 상위)")
-    p.add_argument("--variant", action="append", help="만들 변종. 기본은 전부")
-    p.add_argument("--debug", action="store_true",
-                   default=os.environ.get("DEBUG") == "1")
+    p.add_argument("-w", "--weight", action="append", metavar="W[,W...]",
+                   help="만들 두께. 숫자(400)나 레시피의 이름(bold, text). normal 은 400. 기본은 전부")
+    p.add_argument("-s", "--style", action="append", metavar="S[,S...]",
+                   help="만들 기울임. normal(곧게 선 것), italic. 기본은 둘 다")
+    p.add_argument("--variant", action="append", metavar="V[,V...]",
+                   help="만들 변종. normal 은 변종 없는 기본 빌드. 기본은 전부")
+    p.add_argument("--quick", action="store_true",
+                   default=os.environ.get("QUICK") == "1",
+                   help="-w normal -s normal 의 줄임말 (QUICK=1 로도 켜짐)")
     p.add_argument("-j", "--jobs", type=int,
                    default=int(os.environ.get("JOBS") or 0) or max(1, multiprocessing.cpu_count() - 1),
                    help="동시에 만들 두께 수 (기본: CPU 수 - 1)")
@@ -301,7 +382,7 @@ def main(argv=None):
     if not getattr(args, "cmd", None):
         parser.print_help()
         return 2
-    if args.cmd in ("build", "fetch") and not args.recipe:
+    if args.cmd in ("build", "fetch", "options") and not args.recipe:
         print("ERROR: --recipe 가 필요합니다", file=sys.stderr)
         return 2
     return args.func(args)

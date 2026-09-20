@@ -1,6 +1,6 @@
 """합성 단계. FontForge 가 필요하다.
 
-    python3 -m hapchija.compose --recipe ... [--out DIR] [--debug]
+    python3 -m hapchija.compose --recipe ... [--out DIR] [--styles Regular,Bold]
     fontforge -script .../compose.py --recipe ...   (바인딩이 없을 때)
 
 레시피의 sources 는 우선순위 순서다. role=base 인 소스가 최종 글꼴의 뼈대가
@@ -266,10 +266,12 @@ def compose(ctx, base_font, suffix, out_dir):
     return out
 
 
-def run(rec, root, out_dir, variants, debug=False,
+def run(rec, root, out_dir, variants,
         plan_path=None, only_styles=None, plan_only=False):
     suffix = R.variant_suffix(rec, variants)
-    styles = R.styles_for(rec, debug)
+    styles = R.pick_styles(rec, only_styles)
+    if not styles:
+        raise SystemExit("ERROR: 만들 스타일이 없습니다: %s" % only_styles)
     sources = R.active_sources(rec, variants)
     base_source = next(s for s in sources if s.get("role") == "base")
 
@@ -319,9 +321,6 @@ def run(rec, root, out_dir, variants, debug=False,
     if plan_only:
         return
 
-    if only_styles:
-        want = set(only_styles.split(","))
-        styles = [s for s in styles if s["file"] in want]
     base_cps = assigned[base_source["id"]]
 
     for style in styles:
@@ -351,18 +350,17 @@ def main(argv=None):
     parser.add_argument("--root", default=None, help="소스를 찾을 기준 디렉터리")
     parser.add_argument("--out", default=None)
     parser.add_argument("--variant", action="append", default=[])
-    parser.add_argument("--debug", action="store_true")
     parser.add_argument("--plan", default=None,
                         help="코드포인트 배분 결과 (JSON). 없으면 직접 계산한다")
     parser.add_argument("--styles", default=None,
-                        help="맡을 두께 이름들, 쉼표로 구분. 없으면 전부")
+                        help="만들 스타일의 파일 이름들(Regular,BoldItalic ...), 쉼표로 구분. 없으면 전부")
     parser.add_argument("--plan-only", action="store_true",
                         help="배분만 계산해 --plan 에 쓰고 끝낸다")
     args = parser.parse_args(argv)
 
     rec = R.load(args.recipe)
     root = args.root or os.path.dirname(os.path.abspath(args.recipe)) or "."
-    run(rec, root, args.out or root, {v: True for v in args.variant}, args.debug,
+    run(rec, root, args.out or root, {v: True for v in args.variant},
         plan_path=args.plan, only_styles=args.styles, plan_only=args.plan_only)
 
 

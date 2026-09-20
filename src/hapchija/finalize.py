@@ -158,10 +158,11 @@ def fix_tables(rec, path, style):
     font.close()
 
 
-def run(rec, work_dir, variants, debug=False):
+def run(rec, work_dir, variants, styles=None):
+    """styles 는 합칠 스타일의 파일 이름 목록. 비면 전부."""
     suffix = R.variant_suffix(rec, variants)
     prefix = R.family_short(rec, suffix)
-    styles = R.styles_for(rec, debug)
+    styles = R.pick_styles(rec, styles)
     sources = R.active_sources(rec, variants)
     extra = [s for s in sources if s.get("role") != "base"]
     hinting = rec["finalize"].get("hinting", [])
@@ -213,9 +214,10 @@ def main(argv=None):
     parser.add_argument("--recipe", required=True)
     parser.add_argument("--dir", default=".")
     parser.add_argument("--variant", action="append", default=[])
-    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--styles", default=None,
+                        help="합칠 스타일의 파일 이름들, 쉼표로 구분. 없으면 전부")
     args = parser.parse_args(argv)
-    run(R.load(args.recipe), args.dir, {v: True for v in args.variant}, args.debug)
+    run(R.load(args.recipe), args.dir, {v: True for v in args.variant}, args.styles)
 
 
 if __name__ == "__main__":

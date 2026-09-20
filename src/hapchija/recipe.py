@@ -39,11 +39,81 @@ def variant_suffix(recipe, variants):
     return ""
 
 
-def styles_for(recipe, debug=False):
+# 두께 이름 중 레시피와 무관하게 늘 통하는 것. CSS font-weight 의 normal 이다.
+WEIGHT_ALIASES = {"normal": 400}
+
+# -s 로 고를 수 있는 값. normal 은 곧게 선 것.
+SLANTS = ("normal", "italic")
+
+
+def split_list(values):
+    """['400,bold', 'text'] → ['400', 'bold', 'text'].
+
+    쉼표로 이어 적어도, 옵션을 여러 번 적어도 된다. 소문자로 맞추고 중복은
+    한 번만 남긴다.
+    """
+    out = []
+    for value in values or []:
+        for token in str(value).split(","):
+            token = token.strip().lower()
+            if token and token not in out:
+                out.append(token)
+    return out
+
+
+def weight_matches(style, token):
+    """두께 지정 하나가 이 스타일에 맞는가. 숫자, 레시피의 두께 이름, normal(400)."""
+    if token.isdigit():
+        return style["weight"] == int(token)
+    if token in WEIGHT_ALIASES:
+        return style["weight"] == WEIGHT_ALIASES[token]
+    return style["name"].lower() == token
+
+
+def slant_matches(style, token):
+    return bool(style.get("italic")) == (token == "italic")
+
+
+def weight_names(recipe):
+    """레시피에 있는 두께를 '400 regular' 꼴로. 오류 메시지에 쓴다."""
+    out = []
+    for style in recipe["styles"]:
+        label = "%d %s" % (style["weight"], style["name"].lower())
+        if label not in out:
+            out.append(label)
+    return out
+
+
+def select_styles(recipe, weights=None, slants=None):
+    """-w / -s 로 고른 스타일. 둘 다 비면 전부.
+
+    어느 스타일에도 맞지 않는 지정이 있으면 ValueError 를 낸다. 오타를 조용히
+    넘기면 빌드가 아무것도 안 만들고 끝나기 때문이다.
+    """
     styles = recipe["styles"]
-    if debug:
-        return [styles[recipe.get("debugStyleIndex", 0)]]
-    return styles
+    for token in weights or []:
+        if not any(weight_matches(s, token) for s in styles):
+            raise ValueError("그런 두께가 없습니다: %s\n  있는 두께: %s"
+                             % (token, ", ".join(weight_names(recipe))))
+    for token in slants or []:
+        if token not in SLANTS:
+            raise ValueError("그런 스타일이 없습니다: %s\n  있는 스타일: %s"
+                             % (token, ", ".join(SLANTS)))
+    return [s for s in styles
+            if (not weights or any(weight_matches(s, t) for t in weights))
+            and (not slants or any(slant_matches(s, t) for t in slants))]
+
+
+def pick_styles(recipe, files=None):
+    """파일 이름(Regular, BoldItalic ...)으로 고른 스타일. 비면 전부.
+
+    고르는 규칙은 cli 가 한 번만 적용하고, compose 와 finalize 에는 그 결과를
+    이름으로 넘긴다.
+    """
+    if not files:
+        return recipe["styles"]
+    want = set(files.split(",")) if isinstance(files, str) else set(files)
+    return [s for s in recipe["styles"] if s["file"] in want]
 
 
 def active_sources(recipe, variants):
