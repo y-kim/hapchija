@@ -207,6 +207,40 @@ def op_merge_sfd(ctx, font, spec, source_half):
     font.mergeFonts(path)
 
 
+@op("compose")
+def op_compose(ctx, font, spec, source_half):
+    """같은 글꼴의 글리프를 옮기고 줄여 붙여서 새 글리프를 만든다.
+
+        {"op": "compose", "cp": "203c", "width": "source-half",
+         "parts": [{"cp": "0021", "dx": -110}, {"cp": "0021", "dx": 110}]}
+
+    ‼ ⁇ ⁈ ⁉ 같은 겹문장부호를 CJK 소스의 전각 글리프를 통째로 줄여 넣으면
+    크기가 제각각이고 너무 작아진다. 라틴 소스 자체의 ! 와 ? 를 두 개 붙이면
+    높이가 본문 부호와 같다. part 의 scale 은 백분율 (75 또는 [75, 100]),
+    dx·dy 는 이 글꼴의 유닛이다. 결과는 참조를 풀어 윤곽으로 두고, width 를
+    준 뒤 가운데 놓는다.
+    """
+    code = cp(spec["cp"])
+    glyph = font.createChar(code)
+    glyph.clear()
+    for part in spec["parts"]:
+        src = font[cp(part["cp"])]
+        sx, sy = as_scale(part.get("scale", 100))
+        # 부품은 자기 자면 중심을 기준으로 줄인다. 원점 기준이면 축소 비율이 다른
+        # 부품끼리 자리가 어긋난다. 그 뒤 dx·dy 만큼 옮긴다.
+        xmin, ymin, xmax, ymax = src.boundingBox()
+        cx, cy = (xmin + xmax) / 2, (ymin + ymax) / 2
+        matrix = psMat.compose(psMat.translate(-cx, -cy), psMat.compose(psMat.scale(sx, sy), psMat.translate(cx + part.get("dx", 0), cy + part.get("dy", 0))))
+        glyph.addReference(src.glyphname, matrix)
+    glyph.unlinkRef()
+    glyph.correctDirection()      # 음수 배율(뒤집기)로 뒤집힌 윤곽 방향을 바로잡는다
+    if "width" in spec:
+        glyph.width = ctx.width_value(spec["width"], source_half)
+    else:
+        glyph.width = font[cp(spec["parts"][0]["cp"])].width
+    center_in_width(glyph)
+
+
 @op("round")
 def op_round(ctx, font, spec, source_half):
     for glyph in font.glyphs():

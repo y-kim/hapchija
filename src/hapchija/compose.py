@@ -14,6 +14,7 @@ import json
 import os
 
 import fontforge
+import psMat
 
 from . import fits, ops, recipe as R
 
@@ -48,6 +49,17 @@ def merged_codepoints(ctx, source, styles):
     return cps
 
 
+def composed_codepoints(source):
+    """이 소스의 ops 가 compose 로 새로 만드는 코드포인트. 소스 파일의 cmap 에는
+    없지만 이 소스가 내놓는 것이므로 배정에 넣는다."""
+    out = set()
+    for key in ("preOps", "ops", "opsAfter"):
+        for spec in source.get(key) or []:
+            if spec.get("op") == "compose":
+                out.add(R.cp(spec["cp"]))
+    return out
+
+
 def available_codepoints(ctx, source, styles):
     """이 소스가 내놓을 수 있는 코드포인트.
 
@@ -68,6 +80,7 @@ def available_codepoints(ctx, source, styles):
         cps |= ops.codepoints_of(font)
         font.close()
     cps |= merged_codepoints(ctx, source, styles)
+    cps |= composed_codepoints(source)
     if source.get("keepRanges"):
         cps &= range_set(source["keepRanges"])
     if source.get("dropRanges"):
@@ -161,9 +174,44 @@ def build_source(ctx, source, shared, keep_cps=None):
     if source.get("fit"):
         fits.apply(ctx, font, source["fit"], shared)
 
+    if source.get("role") != "base":
+        narrow_to_half(ctx, font, ctx.recipe.get("narrowToHalf"))
+
     ops.run(ctx, font, source.get("opsAfter"), source_half)
     font.selection.none()
     return font
+
+
+def narrow_to_half(ctx, font, spec):
+    """레시피의 narrowToHalf 에 적힌 기호를 반각으로 만든다.
+
+    CJK 소스는 기호를 전각으로 갖고 있는 것이 많은데, 터미널은 East Asian
+    Width 가 A 나 N 인 글자를 1칸으로 세므로 전각이면 옆 칸을 침범한다.
+    잉크 폭이 maxInk 를 넘으면 가로세로 같은 비율로 줄이고(원이 찌그러지지
+    않도록), 반각 폭에 가운데 놓는다. 소스가 어느 것이든 결과 코드포인트 기준으로
+    적용하므로 레시피 최상위에 한 번만 적는다. 뼈대(base)는 이미 반각이라 뺀다.
+    """
+    if not spec:
+        return
+    codes = set(ops.selected_codepoints(spec))
+    max_ink = spec.get("maxInk", round(ctx.half_width * 0.89))
+    done = shrunk = 0
+    for code in sorted(codes):
+        if code not in font:
+            continue
+        glyph = font[code]
+        if not ops.worth(glyph):
+            continue
+        xmin, _, xmax, _ = glyph.boundingBox()
+        ink = xmax - xmin
+        if ink > max_ink:
+            ops.transform_about_center(glyph, psMat.scale(max_ink / ink))
+            shrunk += 1
+        glyph.width = ctx.half_width
+        ops.center_in_width(glyph)
+        done += 1
+    if done:
+        print("narrowToHalf: %d 자 반각으로 (그중 %d 자 축소)" % (done, shrunk))
 
 
 def subset_part(path, codepoints):

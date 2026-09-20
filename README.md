@@ -77,6 +77,18 @@ hapchija build --recipe recipes/foo.json --variant nerd         # 변종 골라 
 }
 ```
 
+`narrowToHalf` 는 레시피 최상위에 한 번 적는 기호 폭 정책입니다. `cps` 와
+`ranges` 에 적은 코드포인트를 CJK 소스에서 반각으로 만듭니다. 잉크 폭이
+`maxInk` 를 넘으면 가로세로 같은 비율로 줄이고 반각에 가운데 놓습니다. 뼈대
+소스는 이미 반각이라 건드리지 않습니다. 코드포인트를 아예 빼려면
+`finalize.removeCodepoints` 에 적습니다.
+
+`compose` op 는 같은 글꼴의 글리프를 옮기고 줄여 붙여 새 글리프를 만듭니다.
+겹문장부호 ‼ ⁇ 처럼 CJK 소스의 전각 글리프를 줄여 넣으면 어색한 글자를 라틴
+소스의 `!` `?` 로 만들 때 씁니다. 부품마다 `cp`, `dx`, `dy`, `scale`(백분율,
+자기 중심 기준)을 적고 `width` 를 주면 가운데 놓습니다. 배정 단계는 compose 로
+만든 코드포인트를 그 소스 것으로 봅니다.
+
 `output.familyName` 이 영문 가족 이름이고, 현지어 이름은
 `output.localizedFamilyName` 에 `{"Korean": "푸른모"}` 처럼 적습니다. 키는
 FontForge 의 언어 이름입니다.
