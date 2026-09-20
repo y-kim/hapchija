@@ -77,6 +77,10 @@ hapchija build --recipe recipes/foo.json --variant nerd         # 변종 골라 
 }
 ```
 
+`output.familyName` 이 영문 가족 이름이고, 현지어 이름은
+`output.localizedFamilyName` 에 `{"Korean": "푸른모"}` 처럼 적습니다. 키는
+FontForge 의 언어 이름입니다.
+
 핵심은 `sources` 입니다.
 
 - **우선순위 순서**입니다. 앞선 소스가 같은 코드포인트를 이깁니다.

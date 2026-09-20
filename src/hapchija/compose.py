@@ -269,6 +269,17 @@ def compose(ctx, base_font, suffix, out_dir):
     font.appendSFNTName("English (US)", "Preferred Family", names["typo_family"])
     font.appendSFNTName("English (US)", "Preferred Styles", names["typo_subfamily"])
 
+    # 현지어 가족 이름. output.localizedFamilyName 에 {"Korean": "푸른모"} 처럼 적는다.
+    # 키는 FontForge 의 언어 이름이다. 영문 이름에서 가족 부분만 바꿔 넣으므로
+    # RIBBI 밖 두께("Pureunmo SemiBold")도 같은 규칙을 따른다.
+    english = names["typo_family"]
+    for lang, local in rec["output"].get("localizedFamilyName", {}).items():
+        font.appendSFNTName(lang, "Family", names["familyname"].replace(english, local, 1))
+        font.appendSFNTName(lang, "SubFamily", names["subfamily"])
+        font.appendSFNTName(lang, "Fullname", names["fullname"].replace(english, local, 1))
+        font.appendSFNTName(lang, "Preferred Family", local)
+        font.appendSFNTName(lang, "Preferred Styles", names["typo_subfamily"])
+
     font.os2_weight = style["weight"]
     font.os2_width = target.get("widthClass", 5)
     font.os2_fstype = 0
