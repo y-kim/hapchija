@@ -18,10 +18,13 @@ from .recipe import cp, cp_range
 
 def fit_half_scale(ctx, font, spec, shared):
     sx, sy = ops.as_scale(spec["scale"])
-    font.selection.all()
-    for glyph in font.selection.byGlyphs:
+    # selection.byGlyphs 가 아니라 glyphs() 로 돈다. byGlyphs 는 인코딩 슬롯마다
+    # 글리프를 내주므로, 여러 코드포인트가 한 글리프를 공유하면(Consolas 의
+    # space/U+00A0, hyphen/U+2010/U+00AD 등) 그 글리프가 두세 번 변환된다.
+    # 스페이스 폭이 두 번 줄면 아래 sourceWidth 역산이 틀어져 라틴 전체가 옆으로
+    # 밀리고, 공유 글리프 자체도 작아진다.
+    for glyph in font.glyphs():
         glyph.transform(psMat.scale(sx, sy))
-    font.selection.none()
 
     ops.run(ctx, font, spec.get("opsBeforeWidth"))
 

@@ -13,7 +13,7 @@ import sys
 import unicodedata
 
 from fontTools.merge import Merger
-from fontTools.ttLib import TTFont
+from fontTools.ttLib import TTFont, newTable
 
 from . import recipe as R
 
@@ -126,6 +126,9 @@ def fix_tables(rec, path, style):
     os2 = font["OS/2"]
     if "xAvgCharWidth" in cfg:
         os2.xAvgCharWidth = cfg["xAvgCharWidth"]
+    # compose 는 fsType 을 0 으로 두지만, fontTools 병합이 부품(예: 맑은 고딕)의
+    # 제한 비트를 OR 로 합쳐 버린다. 여기서 확정한다.
+    os2.fsType = cfg.get("fsType", 0)
     bold, italic = R.ribbi_flags(style)
     os2.fsSelection = fs_selection(bold, italic)
     font["head"].macStyle = mac_style(bold, italic)
@@ -143,6 +146,15 @@ def fix_tables(rec, path, style):
         hhea.ascent = v["ascent"]
         hhea.descent = -v["descent"]
         hhea.lineGap = 0
+
+    # 힌팅을 넣지 않는 글꼴의 gasp. FontForge 는 무힌팅 글꼴에 회색 안티앨리어싱(2)
+    # 만 켜 두는데, 그러면 Windows 에서 대칭 스무딩이 빠진다. ttfautohint 를 돌리면
+    # 그쪽이 모든 크기를 15 로 채우므로, 안 돌릴 때만 여기서 채운다.
+    if not fin.get("hinting"):
+        gasp = newTable("gasp")
+        gasp.version = 1
+        gasp.gaspRange = {0xFFFF: 15}
+        font["gasp"] = gasp
 
     post = font["post"]
     if "isFixedPitch" in cfg:

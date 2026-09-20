@@ -128,8 +128,13 @@ def build_source(ctx, source, shared, keep_cps=None):
         # 연산이라 한자 2만 자에 돌리면 빌드 시간이 몇 배로 늘어난다.
         font.selection.all()
         for pair in source.get("italicExclude", []):
-            font.selection.select(("less", "unicode", "ranges"),
-                                  R.cp(pair[0]), R.cp(pair[1]))
+            try:
+                font.selection.select(("less", "unicode", "ranges"),
+                                      R.cp(pair[0]), R.cp(pair[1]))
+            except ValueError:
+                # 소스의 인코딩(예: BMP 만)을 넘는 범위. 그 범위에 글리프가
+                # 있을 수 없으니 뺄 것도 없다.
+                pass
         font.italicize(italic_angle=ctx.italic_angle)
         font.selection.none()
 
@@ -215,6 +220,34 @@ def font_names(rec, style, suffix):
     }
 
 
+def restore_altuni(src, dst):
+    """mergeFonts 가 버리는 altuni 를 되살린다.
+
+    FontForge 의 mergeFonts 는 글리프의 주 유니코드만 옮기고, 한 글리프가 추가로
+    매핑된 코드포인트(altuni)는 버린다. Consolas 는 space 에 U+00A0, hyphen 에
+    U+2010 과 U+00AD 를 이렇게 매핑해 두어서, 그대로 두면 NBSP 가 없는 글꼴이
+    된다. IBM Plex Mono 에는 altuni 가 없어 Monoplex 에서는 드러나지 않았다.
+    """
+    restored = 0
+    for glyph in src.glyphs():
+        if not glyph.altuni or glyph.glyphname not in dst:
+            continue
+        seen, alts = set(), []
+        for alt in glyph.altuni:
+            if alt[0] is None or alt[0] < 0 or (alt[0], alt[1]) in seen:
+                continue
+            seen.add((alt[0], alt[1]))
+            alts.append(alt)
+        if alts:
+            dst[glyph.glyphname].altuni = tuple(alts)
+            restored += 1
+    if restored:
+        # 파이썬에서 altuni 를 넣어도 FontForge 는 인코딩 맵을 다시 만들지 않아서
+        # generate 의 cmap 에 실리지 않는다. 인코딩을 재지정하면 다시 만든다.
+        dst.encoding = "UnicodeFull"
+        print("altuni 복원: %d 글리프" % restored)
+
+
 def compose(ctx, base_font, suffix, out_dir):
     rec, style = ctx.recipe, ctx.style
     target = rec["target"]
@@ -253,6 +286,7 @@ def compose(ctx, base_font, suffix, out_dir):
     base_font.save(tmp)
     font.mergeFonts(tmp)
     os.remove(tmp)
+    restore_altuni(base_font, font)
 
     # 윤곽만 비운다. cmap 에서 빼는 것은 finalize 가 한다.
     for code in [R.cp(c) for c in rec["finalize"].get("removeCodepoints", [])]:
