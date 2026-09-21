@@ -217,14 +217,16 @@ def op_compose(ctx, font, spec, source_half):
     ‼ ⁇ ⁈ ⁉ 같은 겹문장부호를 CJK 소스의 전각 글리프를 통째로 줄여 넣으면
     크기가 제각각이고 너무 작아진다. 라틴 소스 자체의 ! 와 ? 를 두 개 붙이면
     높이가 본문 부호와 같다. part 의 scale 은 백분율 (75 또는 [75, 100]),
-    dx·dy 는 이 글꼴의 유닛이다. 결과는 참조를 풀어 윤곽으로 두고, width 를
-    준 뒤 가운데 놓는다.
+    dx·dy 는 이 글꼴의 유닛이다. 부품은 cp 대신 glyph 로 이름을 줘도 된다.
+    결과는 참조를 풀어 윤곽으로 두고, width 를 준 뒤 가운데 놓는다.
     """
     code = cp(spec["cp"])
     glyph = font.createChar(code)
     glyph.clear()
     for part in spec["parts"]:
-        src = font[cp(part["cp"])]
+        # 부품은 코드포인트로, 또는 글리프 이름으로 지정한다. 분수의 one.numr
+        # 처럼 cmap 에 없는 부품 글리프를 쓸 때가 있다.
+        src = font[part["glyph"]] if "glyph" in part else font[cp(part["cp"])]
         sx, sy = as_scale(part.get("scale", 100))
         # 부품은 자기 자면 중심을 기준으로 줄인다. 원점 기준이면 축소 비율이 다른
         # 부품끼리 자리가 어긋난다. 그 뒤 dx·dy 만큼 옮긴다.
@@ -237,7 +239,8 @@ def op_compose(ctx, font, spec, source_half):
     if "width" in spec:
         glyph.width = ctx.width_value(spec["width"], source_half)
     else:
-        glyph.width = font[cp(spec["parts"][0]["cp"])].width
+        first = spec["parts"][0]
+        glyph.width = (font[first["glyph"]] if "glyph" in first else font[cp(first["cp"])]).width
     center_in_width(glyph)
 
 

@@ -176,6 +176,7 @@ def build_source(ctx, source, shared, keep_cps=None):
 
     if source.get("role") != "base":
         narrow_to_half(ctx, font, ctx.recipe.get("narrowToHalf"))
+    align_box(ctx, font, ctx.recipe.get("alignBox"))
 
     ops.run(ctx, font, source.get("opsAfter"), source_half)
     font.selection.none()
@@ -212,6 +213,44 @@ def narrow_to_half(ctx, font, spec):
         done += 1
     if done:
         print("narrowToHalf: %d 자 반각으로 (그중 %d 자 축소)" % (done, shrunk))
+
+
+def align_box(ctx, font, specs):
+    """기호들을 같은 크기 상자에 넣고 세로 중심을 맞춘다.
+
+    ⊕ ⊖ ⊗ ⊘ ⊙ ⊞ ⊠ 처럼 원이나 사각형으로 둘러싼 기호는 서로 크기와 높이가
+    같아야 한다. 소스가 여러 글꼴로 갈리면 그것이 어긋난다. size 를 주면 잉크를
+    그 크기의 정사각형으로 맞추고, yCenter 로 세로 중심을 옮긴다. 폭(advance)은
+    건드리지 않는다.
+
+    소스마다 가진 글자가 달라 한 계열이 여러 소스에 흩어지므로, 소스별 ops 가
+    아니라 레시피 최상위에 적고 모든 소스에 같은 규칙을 적용한다.
+    """
+    for spec in specs or []:
+        size = spec.get("size")
+        y_center = spec.get("yCenter")
+        done = 0
+        for code in sorted(set(ops.selected_codepoints(spec))):
+            if code not in font:
+                continue
+            glyph = font[code]
+            if not ops.worth(glyph):
+                continue
+            xmin, ymin, xmax, ymax = glyph.boundingBox()
+            if xmax - xmin <= 0 or ymax - ymin <= 0:
+                continue
+            width = glyph.width
+            if size:
+                ops.transform_about_center(
+                    glyph, psMat.scale(size / (xmax - xmin), size / (ymax - ymin)))
+                xmin, ymin, xmax, ymax = glyph.boundingBox()
+            if y_center is not None:
+                glyph.transform(psMat.translate(0, y_center - (ymin + ymax) / 2))
+            glyph.width = width
+            ops.center_in_width(glyph)
+            done += 1
+        if done:
+            print("alignBox: %d 자" % done)
 
 
 def subset_part(path, codepoints):
