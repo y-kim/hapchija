@@ -118,9 +118,29 @@ def selected_codepoints(spec):
 
 
 def selected_glyphs(font, spec):
+    """op 이 건드릴 글리프. 한 글리프가 여러 코드포인트에 걸려 있어도 한 번만 내준다.
+
+    CJK 글꼴은 한 글리프를 통합한자와 강희부수 양쪽에 매핑해 둔다. IBM Plex Sans JP
+    는 258 자가 그렇고, 그중 여섯 자는 부수 보충까지 세 곳에 걸려 있다. 코드포인트
+    단위로 돌면 그런 글리프는 변환을 두 번, 세 번 받는다. 평행이동이면 그만큼 더
+    옮겨 가고 (한자를 -75 내리는 op 에서 行 言 金 車 見 食 馬 高 가 -150 내려갔다),
+    배율이면 그만큼 더 줄어든다.
+    """
+    want_width = spec.get("ifWidth")
+    seen = set()
     for code in selected_codepoints(spec):
-        if code in font:
-            yield font[code]
+        if code not in font:
+            continue
+        glyph = font[code]
+        if glyph.glyphname in seen:
+            continue
+        # ifWidth 를 적으면 지금 그 폭인 글리프만 고른다. 폭으로 갈리는 무리를
+        # 코드포인트로 일일이 적지 않아도 되고, 앞선 op 가 이미 폭을 바꾼
+        # 글리프는 저절로 빠진다.
+        if want_width is not None and glyph.width != want_width:
+            continue
+        seen.add(glyph.glyphname)
+        yield glyph
 
 
 def as_scale(value):

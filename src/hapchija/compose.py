@@ -197,12 +197,14 @@ def narrow_to_half(ctx, font, spec):
     codes = set(ops.selected_codepoints(spec))
     max_ink = spec.get("maxInk", round(ctx.half_width * 0.89))
     done = shrunk = 0
+    seen = set()                 # 한 글리프가 여러 코드포인트에 걸려도 한 번만 줄인다
     for code in sorted(codes):
         if code not in font:
             continue
         glyph = font[code]
-        if not ops.worth(glyph):
+        if not ops.worth(glyph) or glyph.glyphname in seen:
             continue
+        seen.add(glyph.glyphname)
         xmin, _, xmax, _ = glyph.boundingBox()
         ink = xmax - xmin
         if ink > max_ink:

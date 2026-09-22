@@ -126,6 +126,7 @@ FontForge 의 언어 이름입니다.
 | op | 하는 일 |
 |---|---|
 | `scale` / `rotate` | bbox 중심 기준 변환 |
+| `ifWidth` | (op 의 조건) 지금 그 폭인 글리프만 고른다 |
 | `scaleOrigin` | 원점 기준 변환 |
 | `translate` / `setWidth` / `clear` | 이동 / 폭 지정 / 비우기 |
 | `mergeSfd` | 손질한 글리프를 담은 `.sfd` 를 합칩니다 |
