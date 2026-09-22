@@ -351,21 +351,35 @@ def compose(ctx, base_font, suffix, out_dir):
     if style["italic"]:
         font.italicangle = ctx.italic_angle
 
+    # 변종마다 달라지는 값은 variantOutput 이 덮는다. 라이선스가 그렇다.
+    out = R.output(rec, ctx.variants)
+
     font.fontname = names["fontname"]
     font.familyname = names["familyname"]
     font.fullname = names["fullname"]
-    font.copyright = rec["output"].get("copyright", "")
-    font.version = rec["output"].get("version", "")
+    font.copyright = out.get("copyright", "")
+    font.version = out.get("version", "")
     font.weight = style["name"]
     font.appendSFNTName("English (US)", "SubFamily", names["subfamily"])
     font.appendSFNTName("English (US)", "Preferred Family", names["typo_family"])
     font.appendSFNTName("English (US)", "Preferred Styles", names["typo_subfamily"])
 
+    # 라이선스와 상표는 글꼴 파일 안에도 넣는다. ttf 하나만 따로 설치되면 저장소의
+    # LICENSE 파일이 따라가지 않으므로, 글꼴 자신이 무엇으로 배포되는지 들고
+    # 있어야 한다. OFL 2 항이 인정하는 "machine-readable metadata fields" 가
+    # name 테이블의 이 칸들이다. 소스 글꼴의 저작권 표시는 output.copyright 에
+    # 함께 적는다. 상표 표시(7 번)는 OFL FAQ 3.7 이 파생물에도 남기라고 한다.
+    for key, record in (("license", "License"), ("licenseURL", "License URL"),
+                        ("trademark", "Trademark")):
+        value = out.get(key)
+        if value:
+            font.appendSFNTName("English (US)", record, value)
+
     # 현지어 가족 이름. output.localizedFamilyName 에 {"Korean": "푸른모"} 처럼 적는다.
     # 키는 FontForge 의 언어 이름이다. 영문 이름에서 가족 부분만 바꿔 넣으므로
     # RIBBI 밖 두께("Pureunmo SemiBold")도 같은 규칙을 따른다.
     english = names["typo_family"]
-    for lang, local in rec["output"].get("localizedFamilyName", {}).items():
+    for lang, local in out.get("localizedFamilyName", {}).items():
         font.appendSFNTName(lang, "Family", names["familyname"].replace(english, local, 1))
         font.appendSFNTName(lang, "SubFamily", names["subfamily"])
         font.appendSFNTName(lang, "Fullname", names["fullname"].replace(english, local, 1))
@@ -375,8 +389,8 @@ def compose(ctx, base_font, suffix, out_dir):
     font.os2_weight = style["weight"]
     font.os2_width = target.get("widthClass", 5)
     font.os2_fstype = 0
-    font.os2_vendor = rec["output"].get("vendorId", "NONE")
-    font.os2_family_class = rec["output"].get("ibmFamily", 0)
+    font.os2_vendor = out.get("vendorId", "NONE")
+    font.os2_family_class = out.get("ibmFamily", 0)
 
     p = target["panose"]
     font.os2_panose = (

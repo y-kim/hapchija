@@ -99,6 +99,36 @@ hapchija build --recipe recipes/foo.json --variant nerd         # 변종 골라 
 `output.localizedFamilyName` 에 `{"Korean": "푸른모"}` 처럼 적습니다. 키는
 FontForge 의 언어 이름입니다.
 
+`output.copyright`, `output.license`, `output.licenseURL`, `output.trademark` 은
+글꼴 파일의 name 테이블 0 번, 13 번, 14 번, 7 번 칸에 그대로 들어갑니다. ttf 하나만 따로 설치되면
+저장소의 LICENSE 파일이 따라가지 않으므로, 글꼴 자신이 무엇으로 배포되는지
+들고 있어야 합니다. 합성 결과의 라이선스는 소스 글꼴을 따르므로, 소스의 저작권
+표시도 `copyright` 에 함께 적습니다. 소스가 상표를 밝혀 두었다면 그것도
+`trademark` 에 옮겨 적습니다. OFL FAQ 3.7 이 파생물에도 남기라고 합니다.
+
+```json
+"output": {
+  "copyright": "Copyright (c) 2026, Aut Hor with Reserved Font Name \"Foo\".\nCopyright © 2017 IBM Corp. with Reserved Font Name \"Plex\"",
+  "license": "This Font Software is licensed under the SIL Open Font License, Version 1.1. ...",
+  "licenseURL": "http://scripts.sil.org/OFL",
+  "trademark": "Foo® is a trademark of Acme Inc."
+}
+```
+
+변종마다 값이 달라야 하면 `output.variantOutput` 에 그 변종 이름으로 적습니다.
+적은 값만 기본값을 덮습니다. 다른 글꼴의 글리프를 덧붙이는 변종은 그 글리프의
+출처를 밝혀야 하는데, 변종을 안 만드는 빌드에는 그 문구가 들어가면 안 됩니다.
+
+```json
+"output": {
+  "license": "...",
+  "variantSuffix": { "nerd": "Nerd Font" },
+  "variantOutput": {
+    "nerd": { "license": "... 이 변종에는 Nerd Fonts 의 아이콘 글리프가 들어 있다 ..." }
+  }
+}
+```
+
 핵심은 `sources` 입니다.
 
 - **우선순위 순서**입니다. 앞선 소스가 같은 코드포인트를 이깁니다.

@@ -39,6 +39,21 @@ def variant_suffix(recipe, variants):
     return ""
 
 
+def output(recipe, variants):
+    """이 변종의 output 값. variantOutput 에 적은 것이 기본값을 덮는다.
+
+    변종마다 달라지는 것은 대개 라이선스다. 다른 글꼴의 글리프를 덧붙이는
+    변종은 그 글리프의 라이선스를 함께 밝혀야 하는데, 변종을 안 만드는 빌드에는
+    그 문구가 들어가면 안 된다.
+    """
+    out = dict(recipe["output"])
+    overrides = recipe["output"].get("variantOutput", {})
+    for name, on in (variants or {}).items():
+        if on:
+            out.update(overrides.get(name, {}))
+    return out
+
+
 # 두께 이름 중 레시피와 무관하게 늘 통하는 것. CSS font-weight 의 normal 이다.
 WEIGHT_ALIASES = {"normal": 400}
 
