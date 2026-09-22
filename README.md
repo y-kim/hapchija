@@ -139,6 +139,16 @@ FontForge 의 언어 이름입니다.
 - 소스의 `upem` 이 달라도 `target.em` 으로 자동 정규화됩니다. 2048 짜리 글꼴을
   1000 짜리와 섞어도 됩니다.
 
+소스마다 `keepFeatures` 로 살릴 OpenType 피처를, `dropTables` 로 버릴 테이블을
+정할 수 있습니다. 부품은 배정된 코드포인트만 남기고 잘라내는데, 그때 레이아웃
+피처가 통째로 사라집니다. CJK 소스의 커닝을 살리려면 `["kern"]` 처럼 적습니다.
+버리는 테이블의 기본값은 세로쓰기 메트릭과 소스의 힌팅이고, 마무리 단계에서
+지우는 것은 `finalize.stripFromParts` 로 바꿉니다.
+
+```json
+{"id": "kr", "path": "SansKR-{krSrc}.ttf", "keepFeatures": ["kern"]}
+```
+
 ### fit — 소스를 목표 폭에 맞추는 방법
 
 | 모드 | 언제 |

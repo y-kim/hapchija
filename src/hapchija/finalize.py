@@ -178,6 +178,8 @@ def run(rec, work_dir, variants, styles=None):
     sources = R.active_sources(rec, variants)
     extra = [s for s in sources if s.get("role") != "base"]
     hinting = rec["finalize"].get("hinting", [])
+    # 부품에서 떼어 낼 테이블. 레시피가 finalize.stripFromParts 로 바꿀 수 있다.
+    strip_tags = tuple(rec["finalize"].get("stripFromParts", STRIP_FROM_PARTS))
     parts_dir = os.path.join(work_dir, "parts")
 
     for style in styles:
@@ -205,7 +207,7 @@ def run(rec, work_dir, variants, styles=None):
             hinted = base
 
         for part in parts:
-            removed = strip_tables(part)
+            removed = strip_tables(part, strip_tags)
             if removed:
                 print("strip %s: %s" % (os.path.basename(part), ", ".join(removed)))
 

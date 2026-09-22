@@ -258,18 +258,29 @@ def align_box(ctx, font, specs):
             print("alignBox: %d 자" % done)
 
 
-def subset_part(path, codepoints):
+# 부품에서 늘 버리는 테이블. 세로쓰기 메트릭과 소스의 힌팅이다. 힌팅은 변형을
+# 가한 뒤라 어차피 맞지 않는다. 레시피가 source.dropTables 로 바꿀 수 있다.
+DROP_FROM_PARTS = ["vhea", "vmtx", "VORG", "cvt ", "fpgm", "prep", "DSIG", "meta"]
+
+
+def subset_part(path, codepoints, keep_features=None, drop_tables=None):
     """부품을 배정된 코드포인트만 남기고 잘라낸다.
 
     FontForge 의 glyph.clear() 는 윤곽만 비우고 cmap 항목은 남긴다. 빈 글리프가
     그대로 병합되면 글리프 수가 줄지 않아 TrueType 의 상한을 넘긴다.
     fontTools 로 확실히 잘라낸다.
+
+    OpenType 기능은 기본적으로 다 버린다. 부품의 글리프에 변형을 가했으므로 값이
+    맞지 않는 것이 많고, 고정폭 글꼴에서는 커닝이 있으면 안 되기 때문이다. 가변폭
+    글꼴에서 소스의 커닝을 살리고 싶으면 레시피의 source.keepFeatures 에 태그를
+    적는다 (예: ["kern"]). 평행이동만 한 소스라면 그대로 맞고, 크기를 바꾼
+    소스라면 커닝 값은 그 배율만큼 어긋난 채로 들어온다.
     """
     from fontTools import subset
 
     o = subset.Options()
-    o.drop_tables += ["vhea", "vmtx", "VORG", "cvt ", "fpgm", "prep", "DSIG", "meta"]
-    o.layout_features = []
+    o.drop_tables += list(DROP_FROM_PARTS if drop_tables is None else drop_tables)
+    o.layout_features = list(keep_features or [])
     o.notdef_outline = False
     o.recalc_bounds = False
     o.glyph_names = True
@@ -468,7 +479,8 @@ def run(rec, root, out_dir, variants,
                 print("Save " + os.path.basename(part))
                 font.generate(part)
                 font.close()
-                subset_part(part, assigned[source["id"]])
+                subset_part(part, assigned[source["id"]],
+                            source.get("keepFeatures"), source.get("dropTables"))
     if plan_only:
         return
 
@@ -490,7 +502,8 @@ def run(rec, root, out_dir, variants,
             print("Save " + os.path.basename(part))
             font.generate(part)
             font.close()
-            subset_part(part, assigned[source["id"]])
+            subset_part(part, assigned[source["id"]],
+                        source.get("keepFeatures"), source.get("dropTables"))
 
     print("compose: done")
 
