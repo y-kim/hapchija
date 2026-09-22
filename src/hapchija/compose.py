@@ -220,8 +220,10 @@ def align_box(ctx, font, specs):
 
     ⊕ ⊖ ⊗ ⊘ ⊙ ⊞ ⊠ 처럼 원이나 사각형으로 둘러싼 기호는 서로 크기와 높이가
     같아야 한다. 소스가 여러 글꼴로 갈리면 그것이 어긋난다. size 를 주면 잉크를
-    그 크기의 정사각형으로 맞추고, yCenter 로 세로 중심을 옮긴다. 폭(advance)은
-    건드리지 않는다.
+    그 크기에 맞추고, yCenter 로 세로 중심을 옮긴다. 폭(advance)은 건드리지 않는다.
+
+    size 는 숫자 하나면 정사각형이고, [가로, 세로] 면 그 상자에 맞춘다. 둘러싼
+    숫자 ① ❶ 처럼 원이 정원이 아닌 계열은 가로세로를 따로 주어야 한다.
 
     소스마다 가진 글자가 달라 한 계열이 여러 소스에 흩어지므로, 소스별 ops 가
     아니라 레시피 최상위에 적고 모든 소스에 같은 규칙을 적용한다.
@@ -241,8 +243,9 @@ def align_box(ctx, font, specs):
                 continue
             width = glyph.width
             if size:
+                sw, sh = (size, size) if isinstance(size, (int, float)) else size
                 ops.transform_about_center(
-                    glyph, psMat.scale(size / (xmax - xmin), size / (ymax - ymin)))
+                    glyph, psMat.scale(sw / (xmax - xmin), sh / (ymax - ymin)))
                 xmin, ymin, xmax, ymax = glyph.boundingBox()
             if y_center is not None:
                 glyph.transform(psMat.translate(0, y_center - (ymin + ymax) / 2))
