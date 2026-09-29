@@ -307,3 +307,133 @@ def run(ctx, font, ops, source_half=None):
             raise ValueError("알 수 없는 op: %r (쓸 수 있는 것: %s)"
                              % (spec["op"], ", ".join(sorted(OPS))))
         handler(ctx, font, spec, source_half)
+
+
+@op("graftPart")
+def op_graft_part(ctx, font, spec, source_half):
+    """한 글자의 일부를 떼고, 다른 글자의 같은 자리 조각을 옮겨 붙인다.
+
+    일본 표준은 상용한자에서만 부수를 약자로 바꾸고 나머지는 전통 자형으로 둔다.
+    그래서 한 글꼴 안에 두 모양이 다 들어 있다. 神 의 礻 를 떼고 祀 의 示 를
+    옮겨 붙이면, 한국에서 쓰는 자형이 그 글꼴 자신의 획으로 나온다. 부수 글리프
+    (U+2EAC 등)를 눌러 넣는 것과 다르다. 그쪽은 방 너비에 맞추려고 가로로 43%
+    까지 눌러야 해서 세로획이 가로획의 절반이 된다.
+
+        {"op": "graftPart", "from": "7940", "fit": "width",
+         "boxes": [[0, -0.15, 0.45, 0.90]], "cps": ["793e", "795e"]}
+
+    boxes 는 [x0, y0, x1, y1] 이고 x 는 글자 폭, y 는 em 에 대한 비율이다. 다섯째
+    값을 주면 그 윤곽이 가져야 할 최소 가로 폭이다. 辶 의 쓸어내림처럼 글자 폭을
+    가로지르는 조각은 상자도 넓어야 하는데, 그러면 오른쪽 성분의 속공간까지
+    딸려 온다. 최소 폭을 걸어 그것을 막는다.
+    윤곽의 자면 상자가 어느 box 안에 온전히 들어가면 그 윤곽을 조각으로 본다.
+    기증자에서도 같은 box 로 고른다 (donorBoxes 로 따로 줄 수 있다).
+
+    fit 이 "left" 면 크기를 건드리지 않고 **왼끝만 맞춰** 옮긴다. fit 이 "gap"
+    이면 왼끝을 맞추고, 오른끝이 **남은 몸에서 `gap` 만큼 앞** 에 오도록 가로로만
+    맞춘다 (`gap` 은 em 대비 비율 · 음수면 그만큼 파고든다).
+
+        {"op": "graftPart", "from": "79ae", "fit": "gap", "gap": 0.012,
+         "boxes": [[0, -0.15, 0.48, 0.90]], "cps": ["793e"]}      社 — 示 ← 禮
+
+    示 는 礻 보다 좁은 것이 제 모양이라 잉크 폭("width")에 맞추면 1.25배까지
+    늘어나 세로획이 굵어진다. 그렇다고 그대로 두면("left") 방과의 사이가 글자마다
+    들쭉날쭉해진다. 그래서 방과의 틈을 정해 거기에 맞춘다.
+
+    fit 이 "width" 면 떼어 낸 자리의 잉크 폭에 맞춰 가로로만 조절한다. 세로는
+    건드리지 않는다. 같은 크기의 글자끼리라 배율이 1.0 근처로 나오고, 그래서
+    획 두께가 보존된다. "none" 이면 그대로 옮긴다 (辶 처럼 글자 폭을 가로지르는
+    조각은 자리가 이미 같다).
+    """
+    donor_cp = cp(spec["from"])
+    if donor_cp not in font:
+        return
+    em = ctx.em_ascent + ctx.em_descent
+    fit = spec.get("fit", "width")
+
+    def pick(glyph, boxes):
+        width = glyph.width or em
+        out = []
+        for i, contour in enumerate(glyph.foreground):
+            xs = [p.x for p in contour]
+            ys = [p.y for p in contour]
+            lo_x, hi_x = min(xs) / width, max(xs) / width
+            lo_y, hi_y = min(ys) / em, max(ys) / em
+            for b in boxes:
+                x0, y0, x1, y1 = b[:4]
+                span = b[4] if len(b) > 4 else 0      # 최소 가로 폭 (글자 폭 대비)
+                if (x0 <= lo_x and hi_x <= x1 and y0 <= lo_y and hi_y <= y1
+                        and hi_x - lo_x >= span):
+                    out.append(i)
+                    break
+        if not out:
+            return None
+        xs = [p.x for i in out for p in glyph.foreground[i]]
+        return out, min(xs), max(xs)
+
+    boxes = spec["boxes"]
+    donor = font[donor_cp]
+    taken = pick(donor, spec.get("donorBoxes", boxes))
+    if taken is None:
+        return
+    d_idx, d_x0, d_x1 = taken
+
+    done = 0
+    for glyph in selected_glyphs(font, spec):
+        got = pick(glyph, boxes)
+        if got is None or len(got[0]) == len(glyph.foreground):
+            continue                      # 방을 못 고르면 건드리지 않는다
+        t_idx, t_x0, t_x1 = got
+        kept = fontforge.layer()
+        kept.is_quadratic = glyph.foreground.is_quadratic
+        for i, contour in enumerate(glyph.foreground):
+            if i not in t_idx:
+                kept += contour
+        scale = 1.0
+        if fit == "width" and d_x1 > d_x0:
+            scale = (t_x1 - t_x0) / (d_x1 - d_x0)
+        elif fit == "gap" and d_x1 > d_x0:
+            # 한쪽 끝은 떼어 낸 자리 그대로 두고, 다른 끝은 **남은 몸에서 `gap`
+            # 만큼 떨어지게** 둔다. 示 는 礻 보다 좁은 것이 제 모양이라 礻 의 잉크
+            # 폭에 맞추면 1.25배까지 늘어나고, 그대로 두면 방과의 사이가 글자마다
+            # 들쭉날쭉해진다 — 남길 몸에서 재어 맞춘다.
+            #   gapFrom "right" (기본) 왼끝을 두고 오른끝을 남은 몸 왼쪽에 맞춘다 (示)
+            #   gapFrom "left"        오른끝을 두고 왼끝을 남은 몸 오른쪽에 맞춘다 (慨 의 旣)
+            rest = [p.x for c in kept for p in c]
+            if not rest:
+                continue
+            if spec.get("gapFrom", "right") == "left":
+                t_x0 = max(rest) + spec.get("gap", 0.0) * em
+                want = t_x1 - t_x0
+            else:
+                want = (min(rest) - spec.get("gap", 0.0) * em) - t_x0
+            if want <= 0:
+                continue
+            scale = want / (d_x1 - d_x0)
+        if not 0.8 < scale < 1.25:
+            continue
+        part = fontforge.layer()
+        part.is_quadratic = donor.foreground.is_quadratic
+        for i in d_idx:
+            part += donor.foreground[i]
+        if fit in ("width", "left", "gap"):
+            # "width" 는 떼어 낸 자리의 잉크 폭에 맞춰 가로로만 늘이고, "left" 는
+            # 늘이지 않고 **왼끝만 맞춰 옮긴다**. 示 는 礻 보다 좁아서(341 ↔ 426)
+            # 폭에 맞추면 1.25배가 되어 세로획이 굵어진다 — 한국 자형의 示 는
+            # 본디 그 폭이므로 옮기기만 해야 한다.
+            part.transform(psMat.compose(
+                psMat.translate(-d_x0, 0),
+                psMat.compose(psMat.scale(scale, 1.0), psMat.translate(t_x0, 0))))
+        for contour in part:
+            kept += contour
+        width = glyph.width
+        glyph.foreground = kept
+        glyph.correctDirection()   # 윤곽을 다시 담으면 안팎 방향이 흐트러져 속공간이 메워진다
+        glyph.width = width
+        done += 1
+    if done:
+        print("graftPart: %d 자 (기증자 U+%04X)" % (done, donor_cp))
+
+
+# 자형을 손보는 op 은 따로 모아 두었다. 여기서 들여와 OPS 에 등록한다.
+from . import forms       # noqa: E402,F401  (op 등록이 목적이다)
