@@ -170,6 +170,137 @@ def fix_tables(rec, path, style):
     font.close()
 
 
+def add_locl(rec, path):
+    """GSUB 에 나라별 자형(locl)을 더한다 — 이미 있는 기능은 그대로 둔다.
+
+    레시피의 locl 은 {언어 태그: 소스 id 또는 {from, within}} 이다. compose 가 소스마다
+    `uniXXXX.소스` 글리프를 부품으로 실어 두었으므로, 코드포인트 XXXX 의 기본
+    글리프(cmap)를 그 글리프로 바꾸는 단일 치환을 태그마다 하나씩 만들어 locl 로
+    건다. `within` 이 있으면 그 인코딩에 드는 글자만 바꾼다.
+
+    `default` 에 적은 태그(기본 글리프가 그 나라 자형)는 치환 없이 언어 시스템만
+    등록한다. 언어 시스템은 `hani` 와 `DFLT` 두 스크립트에 둔다 — 한자 글자열은
+    hani 로 모양을 잡는데, 그 스크립트가 없는 셰이퍼는 DFLT 로 간다. 새 언어
+    시스템은 그 스크립트의 기본 언어 시스템이 가진 기능을 모두 물려받고 locl 을
+    더한다 (언어 시스템이 생기면 기본 쪽 기능을 쓰지 않으므로).
+    """
+    from fontTools.ttLib.tables import otTables as ot
+
+    spec = rec["locl"]
+    langs = R.locl_langs(rec)
+    default = spec.get("default")
+    font = TTFont(path, recalcBBoxes=False, recalcTimestamp=False)
+    order = set(font.getGlyphOrder())
+    cmap = font.getBestCmap()
+    # 태그마다 치환표 — 소스의 `uniXXXX.소스` 가운데 그 태그의 within 에 드는 것
+    subs = {}
+    for tag, (sid, enc) in sorted(langs.items()):
+        tail = "." + sid
+        m = {}
+        for name in order:
+            if not name.endswith(tail):
+                continue
+            head = name[:-len(tail)]
+            code = int(head[3:], 16) if head.startswith("uni") else int(head[1:], 16)
+            if not R.within_set(enc, [code]):
+                continue
+            base = cmap.get(code)
+            if base and base != name:
+                m[base] = name
+        subs[tag] = m
+    if len(order) > 65535:
+        raise SystemExit("ERROR: 글리프가 %d 개로 TrueType 상한을 넘는다" % len(order))
+
+    gsub = font["GSUB"].table
+    lookups = gsub.LookupList.Lookup
+    index = {}
+    for tag, m in subs.items():
+        st = ot.SingleSubst()
+        st.mapping = m
+        lk = ot.Lookup()
+        lk.LookupType = 1
+        lk.LookupFlag = 0
+        lk.SubTable = [st]
+        lk.SubTableCount = 1
+        lookups.append(lk)
+        index[tag] = len(lookups) - 1
+    gsub.LookupList.LookupCount = len(lookups)
+
+    feats = gsub.FeatureList.FeatureRecord
+    feat_of = {}
+    for tag in langs:
+        fr = ot.FeatureRecord()
+        fr.FeatureTag = "locl"
+        fr.Feature = ot.Feature()
+        fr.Feature.FeatureParams = None
+        fr.Feature.LookupListIndex = [index[tag]]
+        fr.Feature.LookupCount = 1
+        feats.append(fr)
+        feat_of[tag] = len(feats) - 1
+
+    def ensure_script(tag):
+        for sr in gsub.ScriptList.ScriptRecord:
+            if sr.ScriptTag == tag:
+                return sr
+        sr = ot.ScriptRecord()
+        sr.ScriptTag = tag
+        sr.Script = ot.Script()
+        sr.Script.LangSysRecord = []
+        sr.Script.LangSysCount = 0
+        dflt = next((r for r in gsub.ScriptList.ScriptRecord if r.ScriptTag == "DFLT"), None)
+        base = dflt.Script.DefaultLangSys if dflt and dflt.Script.DefaultLangSys else None
+        ls = ot.LangSys()
+        ls.LookupOrder = None
+        ls.ReqFeatureIndex = base.ReqFeatureIndex if base else 0xFFFF
+        ls.FeatureIndex = list(base.FeatureIndex) if base else []
+        ls.FeatureCount = len(ls.FeatureIndex)
+        sr.Script.DefaultLangSys = ls
+        gsub.ScriptList.ScriptRecord.append(sr)
+        return sr
+
+    tags = ([default] if default else []) + sorted(langs)
+    for script in ("DFLT", "hani"):
+        sr = ensure_script(script)
+        base = sr.Script.DefaultLangSys
+        for tag in tags:
+            key = "%-4s" % tag
+            rec_ = next((r for r in sr.Script.LangSysRecord if r.LangSysTag == key), None)
+            if rec_ is None:
+                rec_ = ot.LangSysRecord()
+                rec_.LangSysTag = key
+                ls = ot.LangSys()
+                ls.LookupOrder = None
+                ls.ReqFeatureIndex = base.ReqFeatureIndex if base else 0xFFFF
+                ls.FeatureIndex = list(base.FeatureIndex) if base else []
+                rec_.LangSys = ls
+                sr.Script.LangSysRecord.append(rec_)
+            if tag in feat_of and feat_of[tag] not in rec_.LangSys.FeatureIndex:
+                rec_.LangSys.FeatureIndex.append(feat_of[tag])
+            rec_.LangSys.FeatureCount = len(rec_.LangSys.FeatureIndex)
+        sr.Script.LangSysRecord.sort(key=lambda r: r.LangSysTag)
+        sr.Script.LangSysCount = len(sr.Script.LangSysRecord)
+    gsub.ScriptList.ScriptRecord.sort(key=lambda r: r.ScriptTag)
+    gsub.ScriptList.ScriptCount = len(gsub.ScriptList.ScriptRecord)
+    # 기능 목록은 태그 순이어야 한다 — 더한 locl 을 제자리로 옮기고 번호를 고쳐 준다
+    order_ = sorted(range(len(feats)), key=lambda i: (feats[i].FeatureTag, i))
+    remap = {old_i: new_i for new_i, old_i in enumerate(order_)}
+    gsub.FeatureList.FeatureRecord = [feats[i] for i in order_]
+    gsub.FeatureList.FeatureCount = len(feats)
+    for sr in gsub.ScriptList.ScriptRecord:
+        for ls in [sr.Script.DefaultLangSys] + [r.LangSys for r in sr.Script.LangSysRecord]:
+            if ls is None:
+                continue
+            ls.FeatureIndex = sorted(remap[i] for i in ls.FeatureIndex)
+            ls.FeatureCount = len(ls.FeatureIndex)
+            if ls.ReqFeatureIndex != 0xFFFF:
+                ls.ReqFeatureIndex = remap[ls.ReqFeatureIndex]
+    font.save(path)
+    font.close()
+    print("  locl: " + " · ".join("%s→%s%s %d자" % (t, v[0], "(%s)" % v[1] if v[1] else "", len(subs[t]))
+                                   for t, v in sorted(langs.items()))
+          + (" · %s 기본" % default if default else "") + " · 글리프 %d" % len(order))
+
+
 def run(rec, work_dir, variants, styles=None):
     """styles 는 합칠 스타일의 파일 이름 목록. 비면 전부."""
     suffix = R.variant_suffix(rec, variants)
@@ -198,6 +329,12 @@ def run(rec, work_dir, variants, styles=None):
                 raise SystemExit("ERROR: %s 가 없습니다" % part)
             parts.append(part)
 
+        # 나라별 자형 부품 (compose 가 locl 이 있을 때만 만든다)
+        for source in sources:
+            part = os.path.join(parts_dir, "locl-%s-%s.ttf" % (source["id"], style["file"]))
+            if os.path.exists(part):
+                parts.append(part)
+
         if hinting:
             print("ttfautohint: " + name)
             hinted = os.path.join(work_dir, "hinted-" + name)
@@ -211,6 +348,19 @@ def run(rec, work_dir, variants, styles=None):
             if removed:
                 print("strip %s: %s" % (os.path.basename(part), ", ".join(removed)))
 
+        # 합칠 글리프 수를 먼저 센다. 넘으면 fontTools 가 합치다가 struct 오류로
+        # 멈추는데, 무엇이 넘었는지 알 수 없다. 부품마다 .notdef 는 겹치므로 뺀다.
+        total = 0
+        for p in [hinted] + parts:
+            f = TTFont(p, lazy=True)
+            total += len(f.getGlyphOrder())
+            f.close()
+        total -= len(parts)
+        if total > 65535:
+            raise SystemExit("ERROR: %s 의 글리프가 %d 개로 TrueType 상한(65,535)을 %d 넘는다"
+                             " — locl 을 줄이거나 within 으로 범위를 좁힌다"
+                             % (name, total, total - 65535))
+
         print("merge: " + name)
         merge_parts(hinted, parts, base)
         if hinted != base:
@@ -218,6 +368,8 @@ def run(rec, work_dir, variants, styles=None):
 
         print("fix tables: " + name)
         fix_tables(rec, base, style)
+        if rec.get("locl"):
+            add_locl(rec, base)
 
     shutil.rmtree(parts_dir, ignore_errors=True)
     print("finalize: done")

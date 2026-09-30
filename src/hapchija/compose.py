@@ -106,7 +106,9 @@ def assign_codepoints(ctx, sources, styles):
     return assigned
 
 
-def build_source(ctx, source, shared, keep_cps=None):
+def build_source(ctx, source, shared, keep_cps=None, pre=True):
+    """소스 하나를 짓는다. `pre` 를 끄면 preOps 를 건너뛴다 — locl 부품이 그 나라
+    소스의 **본디** 글리프를 가져갈 때다 (preOps 는 기본 자형을 고치는 자리다)."""
     path = ctx.path(source["path"])
     print("Open " + path)
     font = fontforge.open(path)
@@ -128,7 +130,8 @@ def build_source(ctx, source, shared, keep_cps=None):
 
     # 참조를 풀기 전에 돌려야 하는 op. 합성 글리프가 교체 대상을 참조로 물고
     # 있으므로, 교체는 여기서 해야 반영된다.
-    ops.run(ctx, font, source.get("preOps"))
+    if pre:
+        ops.run(ctx, font, source.get("preOps"))
 
     ops.unlink_all(font)
     ops.set_em(font, ctx)
@@ -181,6 +184,151 @@ def build_source(ctx, source, shared, keep_cps=None):
     ops.run(ctx, font, source.get("opsAfter"), source_half)
     font.selection.none()
     return font
+
+
+# --------------------------------------------------------------------------
+# 나라별 자형 (locl)
+# --------------------------------------------------------------------------
+
+# locl 로 갈아 끼울 기본 범위 — 한자. 레시피의 locl.ranges 가 바꾼다.
+#
+# 부수 블록(2E80-2FDF)은 넣지 않는다. 기본 글꼴은 부수와 통합한자가 한 글리프를
+# 함께 쓰는 일이 많은데(⻖ 와 阝 가 uni961D), 소스에 따라 둘을 따로 그려 두었다.
+# 한 글리프는 한 곳으로만 바꿀 수 있어 부수 쪽 대안은 쓰일 데가 없고 글리프만
+# 먹는다 (Plex TC 1 · SC 43). 통합한자를 바꾸면 같은 글리프를 쓰는 부수도 따라간다.
+LOCL_RANGES = [["3005", "3007"], ["3400", "4dbf"], ["4e00", "9fff"],
+               ["f900", "faff"], ["20000", "3134f"]]
+
+
+def _raw_keys(path, cps):
+    """소스 파일에서 코드포인트마다 윤곽 그대로의 열쇠 — 두 소스의 글리프가 같은가를 본다."""
+    from fontTools.ttLib import TTFont
+    f = TTFont(path, lazy=True)
+    cmap = f.getBestCmap()
+    glyf = f["glyf"] if "glyf" in f else None
+    out = {}
+    for c in cps:
+        n = cmap.get(c)
+        if n is None or glyf is None:
+            continue
+        g = glyf[n]
+        if g.isComposite():
+            out[c] = ("comp", tuple((k.glyphName, k.x, k.y) for k in g.components))
+        elif not g.numberOfContours:
+            out[c] = ()
+        else:
+            out[c] = (tuple(g.coordinates), tuple(g.endPtsOfContours), tuple(g.flags))
+    f.close()
+    return out
+
+
+def pre_ops_codepoints(source):
+    """preOps 가 고치는 코드포인트 — 기본 자형이 소스와 달라진 글자."""
+    out = set()
+    for spec in source.get("preOps") or []:
+        out |= set(ops.selected_codepoints(spec))
+    return out
+
+
+def locl_extras(ctx, rec, sources, assigned, styles):
+    """locl 부품에 실을 코드포인트 — {소스 id: 코드포인트 집합}.
+
+    나라 소스 s 가 코드포인트 c 를 가지고, 그 글리프가 **기본 글리프와 다를 때**
+    싣는다. 기본 글리프는 c 를 배정받은 소스(owner)의 것에 owner 의 preOps 가 손댄
+    것이다. 그래서 다음 둘 가운데 하나면 다르다.
+
+      * owner 가 c 를 preOps 로 고쳤다 (한국 자형으로 고친 글자 — s 가 owner 여도).
+      * s 와 owner 의 소스 글리프 윤곽이 다르다 (s ≠ owner). 굵기마다 소스 파일을
+        대어 한 굵기라도 다르면 싣는다.
+
+    같은 윤곽인 글자를 싣지 않아야 글리프 수가 TrueType 상한 안에 든다.
+    """
+    langs = R.locl_langs(rec)
+    if not langs:
+        return {}
+    by_id = {s["id"]: s for s in sources}
+    han = range_set((rec.get("locl") or {}).get("ranges", LOCL_RANGES))
+    owner = {}
+    for sid, cps in assigned.items():
+        for c in cps & han:
+            owner[c] = sid
+    fixed = {sid: pre_ops_codepoints(by_id[sid]) & han for sid in by_id}
+    out = {}
+    for sid in sorted({v[0] for v in langs.values()}):
+        src = by_id.get(sid)
+        if src is None:
+            raise SystemExit("ERROR: locl 이 모르는 소스 %r 를 가리킨다" % sid)
+        have = available_codepoints(ctx, src, styles) & han
+        # 이 소스를 쓰는 태그들의 within 합집합만 싣는다
+        scope = set()
+        for tag, (s_id, enc) in langs.items():
+            if s_id == sid:
+                scope |= R.within_set(enc, have)
+        have &= scope
+        want = {c for c in have if c in fixed.get(owner.get(c), set())}
+        others = {c for c in have if owner.get(c) not in (None, sid)} - want
+        seen = set()
+        for style in styles:
+            if ctx.path(src["path"], style) in seen:
+                continue                     # 이탤릭은 같은 소스 파일을 쓴다
+            seen.add(ctx.path(src["path"], style))
+            mine = _raw_keys(ctx.path(src["path"], style), others)
+            theirs = {}
+            for oid in {owner[c] for c in others}:
+                theirs.update(_raw_keys(ctx.path(by_id[oid]["path"], style),
+                                        {c for c in others if owner[c] == oid}))
+            diff = {c for c in others if c in mine and mine[c] != theirs.get(c)}
+            want |= diff
+            others -= diff
+        out[sid] = want
+        print("  locl %-4s %6d 자 (기본과 다른 글리프)" % (sid, len(want)))
+    return out
+
+
+def locl_name(code, sid):
+    return "uni%04X.%s" % (code, sid) if code <= 0xFFFF else "u%05X.%s" % (code, sid)
+
+
+def make_locl_part(ctx, source, shared, cps, path):
+    """나라 소스의 본디 글리프로 locl 부품을 만든다 — 코드포인트 없는 `uniXXXX.소스`.
+
+    기본 부품과 똑같이 ops · opsAfter · fit 을 거치게 **코드포인트를 단 채로** 짓고,
+    다 지은 뒤에 이름을 바꾸고 코드포인트를 뗀다. 코드포인트로 고르는 op 이 많아
+    (한자를 내리고 줄이는 opsAfter) 먼저 떼면 변형을 못 받는다.
+    """
+    font = build_source(ctx, source, shared, cps, pre=False)
+    names = []
+    for glyph in list(font.glyphs()):
+        codes = ops.glyph_codepoints(glyph) & cps
+        if not codes or not ops.worth(glyph):
+            continue
+        name = locl_name(min(codes), source["id"])
+        glyph.unicode = -1
+        glyph.altuni = None
+        glyph.glyphname = name
+        names.append(name)
+    print("Save %s (%d 글리프)" % (os.path.basename(path), len(names)))
+    font.generate(path)
+    font.close()
+    subset_glyphs(path, names)
+    return names
+
+
+def subset_glyphs(path, names):
+    """부품을 이름으로 고른 글리프만 남기고 잘라 낸다 — 코드포인트 없는 locl 글리프."""
+    from fontTools import subset
+
+    o = subset.Options()
+    o.drop_tables += list(DROP_FROM_PARTS)
+    o.layout_features = []
+    o.notdef_outline = False
+    o.recalc_bounds = False
+    o.glyph_names = True
+    f = subset.load_font(path, o)
+    ss = subset.Subsetter(options=o)
+    ss.populate(glyphs=list(names))
+    ss.subset(f)
+    subset.save_font(f, path, o)
 
 
 def narrow_to_half(ctx, font, spec):
@@ -447,12 +595,14 @@ def run(rec, root, out_dir, variants,
         with open(plan_path, encoding="utf-8") as fp:
             plan = json.load(fp)
         assigned = {k: set(v) for k, v in plan["assigned"].items()}
+        extras = {k: set(v) for k, v in (plan.get("locl") or {}).items()}
         shared = {}
         if plan.get("widths"):
             shared["widths"] = tuple(set(x) for x in plan["widths"])
     else:
         print("=== 코드포인트 배분 ===")
         assigned = assign_codepoints(ref_ctx, sources, styles)
+        extras = locl_extras(ref_ctx, rec, sources, assigned, styles)
         shared = {}
         for source in sources:
             if source.get("fit", {}).get("mode") == "cjkClassify":
@@ -463,6 +613,7 @@ def run(rec, root, out_dir, variants,
         if plan_path:
             with open(plan_path, "w", encoding="utf-8") as fp:
                 json.dump({"assigned": {k: sorted(v) for k, v in assigned.items()},
+                           "locl": {k: sorted(v) for k, v in extras.items()},
                            "widths": [sorted(x) for x in shared["widths"]]
                                      if "widths" in shared else None}, fp)
             print("배분 결과 저장: " + os.path.basename(plan_path))
@@ -504,6 +655,12 @@ def run(rec, root, out_dir, variants,
             font.close()
             subset_part(part, assigned[source["id"]],
                         source.get("keepFeatures"), source.get("dropTables"))
+
+        for source in sources:
+            cps = extras.get(source["id"])
+            if cps:
+                part = os.path.join(parts_dir, "locl-%s-%s.ttf" % (source["id"], style["file"]))
+                make_locl_part(ctx, source, shared, cps, part)
 
     print("compose: done")
 

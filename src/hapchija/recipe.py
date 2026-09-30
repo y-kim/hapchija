@@ -222,3 +222,32 @@ def resolve(dirs, relative):
         if os.path.exists(p):
             return p
     return os.path.join(dirs[0], relative)
+
+
+def locl_langs(rec):
+    """레시피의 locl 에서 {언어 태그: (소스 id, within)}. `default` 와 `ranges` 는 뺀다.
+
+    값은 소스 id 이거나 {"from": 소스 id, "within": 문자 집합} 이다. `within` 은
+    파이썬 코덱 이름(gb2312 · big5 …)으로, 그 인코딩에 드는 글자만 바꾼다.
+    """
+    spec = rec.get("locl") or {}
+    out = {}
+    for k, v in spec.items():
+        if k in ("default", "ranges") or k.startswith("$"):
+            continue
+        out[k] = (v, None) if isinstance(v, str) else (v["from"], v.get("within"))
+    return out
+
+
+def within_set(enc, cps):
+    """`cps` 가운데 인코딩 `enc` 로 적을 수 있는 코드포인트. enc 가 없으면 전부."""
+    if not enc:
+        return set(cps)
+    out = set()
+    for c in cps:
+        try:
+            chr(c).encode(enc)
+        except (UnicodeEncodeError, LookupError):
+            continue
+        out.add(c)
+    return out
