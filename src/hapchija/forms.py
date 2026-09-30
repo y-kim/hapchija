@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 import fontforge
@@ -161,6 +162,26 @@ def op_copy_glyph(ctx, font, spec, source_half):
               % (", ".join(done), donor.glyphname, " 의 " + side if side else ""))
 
 
+def _split_side(ctx, one, spec, side):
+    """기증자가 녹아붙어 윤곽대로 갈리지 않을 때 — 가는 굵기를 안내로 가른 `side` 쪽.
+
+    `splitBoxes` 에 기증자 코드마다 **왼쪽 성분(변)** 을 고를 상자를 적는다. 상자로
+    고른 윤곽 수가 가는 굵기와 다르면 `ops.isolate_part` 가 같은 글자의 가는 굵기를
+    안내로 `outline.split_glyph` 로 가른다. `split` 은 안내로 쓸 소스 글꼴 틀이다.
+    """
+    from .ops import isolate_part
+    bxs = spec.get("splitBoxes", {})
+    code = one.unicode
+    key = next((k for k in bxs if int(k, 16) == code), None)
+    if key is None or "split" not in spec or code < 0:
+        return None
+    em = ctx.em_ascent + ctx.em_descent
+    got = isolate_part(ctx, one, code, bxs[key], spec["split"], em)
+    if not got:
+        return None
+    return [c.dup() for c in (got[1] if side == "right" else got[0])]
+
+
 @op("swapSide")
 def op_swap_side(ctx, font, spec, source_half):
     """변 또는 방 하나를 다른 글자에서 떼어 와 바꾼다 — 제 좌표 그대로.
@@ -181,7 +202,15 @@ def op_swap_side(ctx, font, spec, source_half):
     쪽이 본디 그 자리에 두었던 상자에 맞춘다.
 
         {"op": "swapSide", "from": ["55a9", "7498"], "side": "right",
-         "fit": "box", "cps": ["8f38"]}                       輸 — 兪 ← 喩 (Bold 는 瑜)
+         "fit": "box", "cps": ["8f38"]}                       輸 — 兪 ← 喩
+
+    기증자가 굵은 굵기에서 변·방이 녹아붙어 윤곽대로 갈리지 않으면(`fit="box"` 의
+    크기가 어긋남), `split` 과 `splitBoxes` 가 있을 때 같은 기증자를 가는 굵기를
+    안내로 다시 갈라 본다 — 輸 Bold 는 喩 의 口 가 兪 에 녹아붙어 있다.
+
+        {"op": "swapSide", "from": ["55a9", "7498"], "side": "right", "fit": "box",
+         "split": "IBM-Plex-Sans-JP/IBMPlexSansJP-{cjkSrc}.ttf",
+         "splitBoxes": {"55a9": [[0, -0.15, 0.33, 0.9]]}, "cps": ["8f38"]}
 
     `spread` 를 적으면 옮겨 온 조각만 **가로획을 잘라 벌린다**. 僧 의 曾 은 增 의
     것이 亻 쪽으로 23 좁아, 왼쪽으로만 그만큼 벌려야 한다 (`anchor` 를 오른쪽에
@@ -229,6 +258,10 @@ def op_swap_side(ctx, font, spec, source_half):
             # 제 좌표 그대로 옮길 때는 두 조각의 크기가 달라도 그것이 제대로다
             # (譄 의 曾 은 贈 제 것보다 21% 넓다 — 변이 貝 라 좁게 앉았던 것이다).
             if fit == "box" and box is not None and not _like(got, box):
+                alt = _split_side(ctx, one, spec, side)
+                if alt is not None and _like(alt, box):
+                    donor, src, how = one, alt, "가는 굵기를 안내로 가름"
+                    break
                 print("swapSide: %s 의 %s 이 %s 의 자리와 크기가 어긋난다 (%s) — 다음 기증자로"
                       % (one.glyphname, side, glyph.glyphname,
                          " ".join("%d" % round(v) for v in O.bbox(got))))
@@ -525,6 +558,20 @@ def _stand_on_columns(ctx, glyph, pieces, spec, band=None):
                 psMat.translate(0, -pb[2]),
                 psMat.compose(psMat.scale(1.0, sy),
                               psMat.translate(dx, pb[2] + dy))))
+        # **발의 오른끝도 기둥의 오른끝에 맞춘다.** 조각은 주는 글자의 세로선 폭을
+        # 그대로 가져오는데, 簾 의 兼 은 竹 아래 눌린 성분이라 굵기에 따라 廉 의
+        # 기둥과 폭이 1~2 다르다. 왼끝만 맞추면 그 차이가 오른 옆선에 턱으로 남는다.
+        # 발의 오른 옆선(발 오른끝과 같은 x 의 점들)만 옮기므로 획의 나머지는 그대로다.
+        fr = max(foot) + dx if foot else None
+        want_r = O.snap_x(cs, col[1] + 1)
+        if fr is not None and abs(want_r - fr) > 0.5 and abs(want_r - fr) <= 4:
+            n = 0
+            for c in moved:
+                for p in c:
+                    if abs(p.x - fr) < 0.5:
+                        p.x = want_r
+                        n += 1
+            notes.append('오른끝 %+d(%d점)' % (round(want_r - fr), n))
         put.append(moved)
         notes.append('%+d,%+d' % (round(dx), round(dy)))
     if abs(sy - 1.0) > 0.001:
@@ -1326,3 +1373,680 @@ def op_swap_radical(ctx, font, spec, source_half):
         print("swapRadical: " + " · ".join(done))
     if miss:
         print("swapRadical: 못 가른 것 " + " ".join(miss))
+
+
+# --------------------------------------------------------------------------
+# 성분 다시 짜기
+# --------------------------------------------------------------------------
+
+
+def _parents(cs):
+    """윤곽마다 **바로 자기를 감싼** 윤곽의 번호 (없으면 None)."""
+    def inside(pt, poly):
+        x, y = pt
+        got = False
+        for k in range(len(poly)):
+            (x1, y1), (x2, y2) = poly[k - 1], poly[k]
+            if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+                got = not got
+        return got
+    polys = [[(p.x, p.y) for p in O._flat_pts(c)] for c in cs]
+    holds = {i: [j for j in range(len(cs)) if j != i and inside(polys[i][0], polys[j])]
+             for i in range(len(cs))}
+    return {i: (max(holds[i], key=lambda j: len(holds[j])) if holds[i] else None)
+            for i in range(len(cs))}
+
+
+def _pick_part(cs, em, want):
+    """`want` 조건에 맞는 성분 — (성분 윤곽들, 나머지) 또는 None.
+
+    want = {"minHeight": 키 하한, "left": [왼끝 하한, 상한], "maxWidth": 폭 상한} (em 비율).
+    그 조건에 맞는 윤곽이 **꼭 하나** 여야 하고, 그 안의 구멍도 함께 가져간다.
+    폭 상한은 녹아붙은 윤곽(다른 성분까지 품은 것)을 거르려는 것이다.
+    """
+    bs = [O.box(c) for c in cs]
+    lo, hi = want.get("left", [0, 1])
+    got = [i for i, b in enumerate(bs)
+           if b[3] - b[2] > want.get("minHeight", 0) * em and lo * em < b[0] < hi * em
+           and b[1] - b[0] < want.get("maxWidth", 1) * em]
+    if len(got) != 1:
+        return None
+    k = got[0]
+    par = _parents(cs)
+    part = [k] + [h for h in range(len(cs)) if par[h] == k and O._turn(cs[h]) != O._turn(cs[k])]
+    return [cs[i] for i in part], [c for i, c in enumerate(cs) if i not in part]
+
+
+def _long_edge(part, right):
+    """왼쪽(right=False) 또는 오른쪽 절반에서 가장 긴 곧은 세로 변 — (x, 위 끝 y)."""
+    bb = O.bbox(part)
+    mid = (bb[0] + bb[1]) / 2.0
+    best = None
+    for c in part:
+        q = [(p.x, p.y) for p in c if p.on_curve]
+        for i in range(len(q)):
+            (x1, y1), (x2, y2) = q[i - 1], q[i]
+            if abs(x1 - x2) < 0.5 and ((x1 > mid) if right else (x1 < mid)):
+                if best is None or abs(y2 - y1) > best[0]:
+                    best = (abs(y2 - y1), x1, max(y1, y2))
+    return (best[1], best[2]) if best else ((bb[1] if right else bb[0]), bb[3])
+
+
+def _part_at(ctx, font, name, em, want, split_tmpl):
+    """이 굵기에서 글리프 `name` 의 성분과 나머지. 녹아붙었으면 가는 굵기를 안내로 가른다."""
+    from . import ops as _ops
+    g = donor_glyph(font, {"from": name})
+    if g is None:
+        return None
+    cs = [c.dup() for c in g.foreground]
+    got = _pick_part(cs, em, want)
+    if got or not split_tmpl:
+        return got
+    me = ctx.style
+    lighter = sorted((st for st in ctx.recipe["styles"]
+                      if st.get("italic", False) == me.get("italic", False)
+                      and st["weight"] < me["weight"]), key=lambda st: -st["weight"])
+    for st in lighter:
+        path = ctx.path(split_tmpl, st)
+        f = _ops._PRISTINE.get(path)
+        if f is None:
+            f = _ops._PRISTINE[path] = _ops._open_pristine(path)
+        gg = donor_glyph(f, {"from": name})
+        if gg is None:
+            continue
+        guide = _pick_part([c.dup() for c in gg.foreground], em, want)
+        if guide:
+            part, rest = O.split_glyph(cs, guide[0], guide[1])
+            return (part, rest) if part and rest else None
+    return None
+
+
+@op("rebuildPart")
+def op_rebuild_part(ctx, font, spec, source_half):
+    """받는 글리프에서 성분 하나를 지우고, 기증자의 같은 성분을 **세로선에 맞춰** 넣는다.
+
+    慨 — 이체자 `uni6168.jp83` 의 旣 에서 변(皀)을 지우고, 漑 의 한국 자형 皀 를
+    떼어 넣는다. 늘이거나 누르지 않는다.
+
+      1. 성분은 `part` 조건(키·왼끝·폭, em 비율)으로 고른다. 녹아붙은 굵기는 `split`
+         경로의 가는 굵기에서 고른 것을 안내로 outline.split_glyph 로 가른다.
+      2. 기증자 성분을 가로로 옮겨 **왼쪽 세로선**을 지운 성분의 왼쪽 세로선에 맞춘다.
+      3. **오른쪽 세로선**은 outline.narrow_across 로 맞춘다 — 두 세로선 사이에서 가로
+         변만 지나는 칼선 하나를 찾아 칼선이 지나는 가로획만 줄인다(늘인다). 네모
+         윗변(오른쪽 세로선의 위 끝) 위의 점은 옮기지 않는다 — 맨 위 삐침은 그대로.
+
+        {"op": "rebuildPart", "base": "uni6168.jp83", "from": "6f11",
+         "part": {"minHeight": 0.7, "left": [0.2, 0.45], "maxWidth": 0.45},
+         "split": "IBM-Plex-Sans-JP/IBMPlexSansJP-{cjkSrc}.ttf", "cps": ["6168"]}
+    """
+    em = ctx.em_ascent + ctx.em_descent
+    want = spec["part"]
+    split_tmpl = spec.get("split")
+    old = _part_at(ctx, font, spec["base"], em, want, split_tmpl)
+    new = _part_at(ctx, font, spec["from"], em, want, split_tmpl)
+    if not old or not new:
+        print("rebuildPart: 성분을 못 뗌 (%s %s · %s %s)" % (spec["base"], bool(old), spec["from"], bool(new)))
+        return
+    old_part, rest = old
+    new_part = new[0]
+    dx = _long_edge(old_part, False)[0] - _long_edge(new_part, False)[0]
+    moved = []
+    for c in new_part:
+        c = c.dup()
+        c.transform(psMat.translate(dx, 0))
+        moved.append(c)
+    gl = _long_edge(moved, False)[0]
+    gr, top = _long_edge(moved, True)
+    want_r = _long_edge(old_part, True)[0]
+    base = [p.x for c in moved for p in O._flat_pts(c) if top - 1 <= p.y <= top + 30]
+    inner = [x for x in base if gl + 5 < x < gr - 5]
+    avoid = [(min(inner) - 4, max(inner) + 4)] if inner else None
+    fitted, knife = O.narrow_across(moved, want_r - gr, gl, gr, avoid=avoid, below=top)
+    if fitted is None:
+        fitted, knife = O.narrow_across(moved, want_r - gr, gl, gr, below=top)
+    if fitted is None:
+        print("rebuildPart: 오른쪽 세로선을 맞출 칼선이 없다 — 넘긴다")
+        return
+    done = []
+    for glyph in selected_glyphs(font, spec):
+        relay(glyph, [[c.dup() for c in rest], [c.dup() for c in fitted]])
+        done.append(glyph.glyphname)
+    print("rebuildPart: %s ← %s 의 성분 (옮김 %+d · 가로획 %+d)"
+          % (", ".join(done), spec["from"], round(dx), round(want_r - gr)))
+
+
+# --------------------------------------------------------------------------
+# 발 가로획 고르기와 변 다리 줄이기
+# --------------------------------------------------------------------------
+
+
+def _pts(c):
+    return [(p.x, p.y, p.on_curve) for p in c]
+
+
+def _contour(pts, quad):
+    c = fontforge.contour()
+    c.is_quadratic = quad
+    for x, y, on in pts:
+        c += fontforge.point(x, y, on)
+    c.closed = True
+    return c
+
+
+def _meet(p, d, q, e):
+    """p + t·d 와 q + s·e 가 만나는 점."""
+    den = d[0] * e[1] - d[1] * e[0]
+    t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / den
+    return (p[0] + t * d[0], p[1] + t * d[1])
+
+
+def _cross_bar(c):
+    """변(禾 꼴)의 가로획과 가운데 다리 — (가로획 아랫변 y, 윗변 y, 다리 오른 옆선 x).
+
+    가로획은 왼끝이 윤곽 왼끝 가까이에 있는 가로 변 둘(위·아래)이다. 다리의 오른
+    옆선은 가로획 윗변 위로 올라가는 모서리 가운데 오른쪽 것이다.
+    """
+    x0 = O.box(c)[0]
+    on = [p for p in c if p.on_curve]
+    hs = []
+    for n in range(len(on)):
+        a, b = on[n - 1], on[n]
+        if abs(a.y - b.y) < 0.5 and abs(a.x - b.x) > 60 and min(a.x, b.x) <= x0 + 30:
+            hs.append(a.y)
+    yb0, yb1 = min(hs), max(hs)
+    left = min(p.x for p in c if yb0 - .5 <= p.y <= yb1 + .5)
+    right = max(p.x for p in on if yb0 - .5 <= p.y <= yb1 + .5)
+    xs = sorted(p.x for p in on if abs(p.y - yb1) < .5 and left + 1 < p.x < right - 1)
+    return yb0, yb1, xs[-1]
+
+
+def _unfuse_leg(c, sr, yb0, low):
+    """변의 오른쪽 다리 끝이 방에 묻어 한 윤곽이면 방의 왼쪽 옆선에서 가른다.
+
+    방은 다리 오른쪽(sr + 120 너머)에서 가로획 아랫변(yb0) 아래에 있는 점들과,
+    `low` 보다 낮은 점들이다. 다리 쪽 끝 모서리는 다리의 끝변과 오른쪽 긴 변의 선이
+    만나는 곳으로 되살린다. 방은 옆선 위의 두 점을 곧게 이어 닫는다.
+    돌아오는 것은 (변, 방) 또는 붙어 있지 않으면 None.
+    """
+    P = _pts(c)
+    n = len(P)
+    if not any(y < low and x > sr + 50 for x, y, _ in P):
+        return None
+    xw = min(x for x, y, on in P if on and x > sr + 120)
+    isw = [(x >= xw - 0.5 and y < yb0) or (y < low and x > sr + 50) for x, y, _ in P]
+    outs = [i for i in range(n) if isw[i] and not isw[(i + 1) % n]]
+    ins = [i for i in range(n) if not isw[i - 1] and isw[i]]
+    if len(outs) != 1 or len(ins) != 1:
+        return None
+    a_w, h_first = outs[0], (outs[0] + 1) % n
+    h_last, b_w = (ins[0] - 1) % n, ins[0]
+
+    def run(i, j):
+        out = [i]
+        while i != j:
+            i = (i + 1) % n
+            out.append(i)
+        return out
+    A, C = P[h_first], P[a_w]
+    Q, Q2 = P[h_last], P[b_w]
+    br = _meet(A, (C[0] - A[0], C[1] - A[1]), Q, (Q2[0] - Q[0], Q2[1] - Q[1]))
+    he = _contour([P[k] for k in run(h_first, h_last)] + [(br[0], br[1], True)], c.is_quadratic)
+    bang = _contour([P[k] for k in run(b_w, a_w)], c.is_quadratic)
+    return he, bang
+
+
+def _leg_end(c, sr):
+    """변 오른쪽 다리의 아래 끝 두 점, 축(아래 → 위), 다리 세로 길이.
+
+    다리 세로 길이는 왼쪽 긴 변이 가운데 다리에서 떨어지는 점부터 아래 끝까지다.
+    """
+    P = _pts(c)
+    n = len(P)
+    lo = sorted((i for i in range(n) if P[i][2] and P[i][0] > sr + 0.5), key=lambda i: P[i][1])[:2]
+    a, b = sorted(lo, key=lambda i: P[i][0])
+    on = [i for i in range(n) if P[i][2]]
+
+    def up(k, other):
+        m = on.index(k)
+        return [q for q in (on[m - 1], on[(m + 1) % len(on)]) if q != other][0]
+    ua, ub = up(a, b), up(b, a)
+    d1 = (P[ua][0] - P[a][0], P[ua][1] - P[a][1])
+    d2 = (P[ub][0] - P[b][0], P[ub][1] - P[b][1])
+    n1, n2 = math.hypot(*d1), math.hypot(*d2)
+    u = (d1[0] / n1 + d2[0] / n2, d1[1] / n1 + d2[1] / n2)
+    nu = math.hypot(*u)
+    return a, b, (u[0] / nu, u[1] / nu), P[ua][1] - (P[a][1] + P[b][1]) / 2
+
+
+def _even_bar(bang, row_min):
+    """방의 가로획 하나의 왼팔을 오른팔 길이로 — 왼끝 옆선 위의 점을 모두 옮긴다.
+
+    가로획은 방 윤곽의 왼끝 가까이(80 안)에 곧은 세로 옆선을 가진 것 가운데 윤곽
+    바닥에서 `row_min` 보다 높은 첫 것이다. 옆선이 점 여럿으로 끊겨 있으면 같은 x
+    로 이어진 점을 모두 옮겨서 모서리가 깎이지 않게 한다.
+    돌아오는 것은 (고친 방, 옛 왼팔, 오른팔).
+    """
+    P = _pts(bang)
+    n = len(P)
+    on = [i for i in range(n) if P[i][2]]
+    x0, _, y0, _ = O.box(bang)
+    vert = []
+    for m in range(len(on)):
+        i, j = on[m - 1], on[m]
+        if abs(P[i][0] - P[j][0]) < 0.5 and abs(P[i][1] - P[j][1]) > 5 \
+                and P[i][0] < x0 + 80 and min(P[i][1], P[j][1]) > y0 + row_min:
+            vert.append((min(P[i][1], P[j][1]), i, j))
+    _, i, j = min(vert)
+    xl = P[i][0]
+    ends = {i, j}
+    for k0, step in ((i, -1), (i, 1), (j, -1), (j, 1)):
+        k = (k0 + step) % n
+        while abs(P[k][0] - xl) < 0.5 and k not in ends:
+            ends.add(k)
+            k = (k + step) % n
+    ys = [P[k][1] for k in ends]
+    band = [P[k] for k in on if min(ys) - .5 <= P[k][1] <= max(ys) + .5]
+    xr = max(p[0] for p in band)
+    inner = sorted(p[0] for p in band if xl + 1 < p[0] < xr - 1)
+    s1, s2 = inner[0], inner[-1]
+    right = xr - s2
+    out = bang.dup()
+    for k in ends:
+        out[k].x = s1 - right
+    return out, s1 - xl, right
+
+
+@op("evenBarTrimLeg")
+def op_even_bar_trim_leg(ctx, font, spec, source_half):
+    """방 발의 가로획 왼팔을 오른팔 길이로 늘이고, 변의 오른쪽 다리를 줄인다.
+
+    程 은 Plex 에서 壬 가운데 가로획의 왼팔이 오른팔보다 짧다. 편수자료는 둘이 같다.
+    왼팔을 늘이면 禾 의 오른쪽 다리가 그 위로 내려온다. 그래서 다리를 **다리 길이의
+    `ratio` 만큼** 줄인다 — 아래 끝 두 점을 축을 따라 끌어올릴 뿐이라 굵기와 기울기는
+    그대로다. 줄인 뒤에도 가로획에 닿으면 둘을 그대로 겹쳐 한 몸으로 합친다. 어느 쪽도
+    잘라 내지 않는다.
+
+        {"op": "evenBarTrimLeg", "ratio": 0.179, "cps": ["7a0b"]}
+
+    굵은 체는 다리 끝이 방에 묻어 한 윤곽으로 오는데, 그때는 먼저 방의 옆선에서
+    가른다(다리 끝 모서리는 제 두 변의 선을 이어 되살린다). 변은 가장 왼쪽 윤곽,
+    방은 바닥이 0 아래로 내려가는 윤곽 가운데 가장 왼쪽 것이다.
+
+      `ratio`    다리를 줄일 몫 — 다리 세로 길이 대비. 0.179 는 Thin 에서 −36 이다.
+      `rowMin`   가운데 가로획을 고를 때 방 바닥에서 떨어진 최소 높이 (기본 80).
+      `low`      방으로 칠 낮은 점의 높이 (기본 100) — 다리 끝보다 낮아야 한다.
+    """
+    done = []
+    for glyph in selected_glyphs(font, spec):
+        cs = [c.dup() for c in glyph.foreground]
+        k = min(range(len(cs)), key=lambda i: O.box(cs[i])[0])
+        he = cs[k]
+        yb0, yb1, sr = _cross_bar(he)
+        others = [c for i, c in enumerate(cs) if i != k]
+        split = _unfuse_leg(he, sr, yb0, spec.get("low", 100))
+        if split is not None:
+            he, bang = split
+        else:
+            cand = [i for i, c in enumerate(others) if O.box(c)[2] < 0 and O.box(c)[0] > sr]
+            if not cand:
+                print("evenBarTrimLeg: %s 에서 방을 못 찾았다" % glyph.glyphname)
+                continue
+            bang = others.pop(min(cand, key=lambda i: O.box(others[i])[0]))
+        bang, was, arm = _even_bar(bang, spec.get("rowMin", 80))
+        a, b, u, L = _leg_end(he, sr)
+        cut = round(L * spec["ratio"])
+        step = cut / u[1]
+        for q in (a, b):
+            he[q].x += u[0] * step
+            he[q].y += u[1] * step
+        from .ops import _hits, _polys
+        touch = _hits(_polys([he])[0], _polys([bang]), 0.0)
+        # 먹을 더하지 않은 것은 다시 짜지 않는다 — 닿을 때만 겹친 두 윤곽을 합친다
+        relay(glyph, [others, [he, bang]], merge=touch)
+        done.append("%s 왼팔 %d→%d · 다리 −%d%s%s" % (
+            glyph.glyphname, round(was), round(arm), cut,
+            " · 가름" if split is not None else "", " · 겹쳐 합침" if touch else ""))
+    if done:
+        print("evenBarTrimLeg: %s" % ", ".join(done))
+
+
+@op("evenOverhang")
+def op_even_overhang(ctx, font, spec, source_half):
+    """맨 아래 가로선이 좌우로 빠져나온 길이를 같게 — 더 나온 쪽 끝만 안으로 옮긴다.
+
+    益 의 皿 밑 가로선은 Plex 에서 왼쪽이 16~28 더 나와 있다. 가로선은 바닥이 가장
+    낮은 윤곽의 아랫부분이고, 빠져나온 길이는 가로선 윗변에서 끝과 그 위로 올라가는
+    옆선 사이를 잰다. 더 나온 쪽 끝의 점을 윗변·아랫변 모두 같은 x 로 옮기므로 끝은
+    곧은 세로 모서리 그대로고 굵기도 그대로다.
+
+        {"op": "evenOverhang", "cps": ["76ca"]}
+    """
+    done = []
+    for glyph in selected_glyphs(font, spec):
+        cs = [c.dup() for c in glyph.foreground]
+        k = min(range(len(cs)), key=lambda i: O.box(cs[i])[2])
+        c = cs[k]
+        x0, x1, y0, _ = O.box(c)
+        on = [p for p in c if p.on_curve]
+        yt = min(p.y for p in on if p.y > y0 + 1)          # 가로선 윗변
+        top = sorted(p.x for p in on if abs(p.y - yt) < .5)
+        if len(top) < 4:
+            print("evenOverhang: %s 에서 가로선 윗변을 못 찾았다" % glyph.glyphname)
+            continue
+        left, right = top[1] - top[0], top[-1] - top[-2]
+        if abs(left - right) < 0.5:
+            continue
+        if left > right:
+            end, to = top[0], top[1] - right
+        else:
+            end, to = top[-1], top[-2] + left
+        for p in c:
+            if abs(p.x - end) < .5 and p.y <= yt + .5:
+                p.x = to
+        relay(glyph, [cs], merge=False)
+        done.append("%s %s %d→%d" % (glyph.glyphname, "왼" if left > right else "오른",
+                                     round(max(left, right)), round(min(left, right))))
+    if done:
+        print("evenOverhang: %s" % ", ".join(done))
+
+
+# --------------------------------------------------------------------------
+# 없는 획을 제 획의 거울로
+# --------------------------------------------------------------------------
+
+
+def _pick_loop(loops, pt):
+    """고리 여럿 가운데 `pt` 에 가장 가까운 점을 가진 것."""
+    best = None
+    for lp in loops:
+        qs = [q for a, b, c in lp for q in ((a, c) if b is None else (a, b, c))]
+        d = min((q[0] - pt[0]) ** 2 + (q[1] - pt[1]) ** 2 for q in qs)
+        if best is None or d < best[0]:
+            best = (d, lp)
+    return best[1] if best else []
+
+
+def _move_loop(nodes, mat):
+    def T(p):
+        return (mat[0] * p[0] + mat[2] * p[1] + mat[4], mat[1] * p[0] + mat[3] * p[1] + mat[5])
+    return [(T(a), T(b) if b else None, T(c)) for a, b, c in nodes]
+
+
+@op("mirrorStroke")
+def op_mirror_stroke(ctx, font, spec, source_half):
+    """乀 의 꼭짓점에서 왼쪽 아래로 갈라지는 삐침을 **제 乀 을 잘라 거울로 뒤집어** 더한다.
+
+    丈 은 편수자료·맑은 고딕에서 乀 꼭짓점에서 짧은 삐침이 하나 더 갈라져 왼쪽
+    아래로 뻗는다. Plex 어느 집안에도 이 획이 없어 남의 글자에서 가져올 수 없다.
+    그래서 제 획을 쓴다 — 굵기가 저절로 여덟 굵기에 맞는다.
+
+    1. 乀 의 꼭짓점(一 아래 왼쪽의 짧게 비스듬한 변의 왼끝)을 윤곽의 점으로 찾는다.
+    2. 꼭짓점에서 乀 의 축(먹에서 잰다)을 따라 L 만큼, 축 둘레로 획 두께만큼의
+       쐐기를 곡선 그대로 잘라 낸다 (`outline.loop_clip`).
+    3. 꼭짓점을 지나는 세로축으로 거울 반전한다.
+    4. 두 맨 위 꼭짓점이 k 만큼만 떨어지게 옮긴다. k = 둘째 꼭짓점 높이에서 그 획의
+       두께다.
+    5. 두 윤곽을 합치고(점으로만 닿으면 한 번에 안 합쳐져 두 번), 두 꼭짓점 사이의
+       V 계곡 점을 **모두** 지워 편다.
+
+    자리와 비율은 맑은 고딕에서 쟀다(먹 상자에 대한 몫).
+
+        {"op": "mirrorStroke", "tip": [0.134, 0.433], "longer": 0.34,
+         "rise": 1.0, "side": 2.0, "cps": ["4e08"]}
+
+      `tip`     삐침 끝 복판 (먹 상자에 대한 몫 x, y)
+      `longer`  굵을수록 길게 하는 몫 (Thin 0 → Bold `longer`, 굵기 차례로 고르게)
+      `rise`    굵을수록 자리를 乀 윗머리 쪽으로 올리는 몫
+      `side`    쐐기 옆선을 축에서 획 두께의 몇 배에 둘지 (기본 1.1). 축이 획 모서리
+                에서 시작하고 乀 은 아래로 휘어 축에서 멀어지므로, 가는 굵기에서 작으면
+                옆선이 먹을 깎아 삐침이 끝으로 갈수록 좁아진다 (丈 Thin 은 2.0 이 필요).
+    """
+    import numpy as np
+    me = ctx.style
+    same = sorted((st for st in ctx.recipe["styles"]
+                   if st.get("italic", False) == me.get("italic", False)), key=lambda st: st["weight"])
+    # 굵기 차례로 고르게 (Thin 0 … Bold 1) — weight 값은 Text 가 끼어 고르지 않다
+    names = [st["name"] for st in same]
+    tw = names.index(me["name"]) / float(len(names) - 1) if len(names) > 1 else 0.0
+    t_mid = spec.get("tip", [0.134, 0.433])
+    longer = spec.get("longer", 0.34)
+    rise = spec.get("rise", 1.0)
+    done = []
+    for g in selected_glyphs(font, spec):
+        wd = g.width
+        cs = list(g.foreground)
+        x0, x1, y0, y1 = O.bbox(cs)
+        W, H = x1 - x0, y1 - y0
+        m = O.part_mask(cs)
+
+        def row(y):
+            return O.runs(m[1000 - int(y)])
+        # 一 의 아랫변
+        ybar = None
+        for y in range(int(y1), int(y0), -1):
+            if any(t[1] - t[0] > 0.6 * W for t in row(y)):
+                ybar = y
+            elif ybar is not None:
+                break
+        # 乀 의 윗머리 — 一 아래 왼쪽의 짧게 비스듬한 변
+        vtx = which = hi_y = None
+        for c2 in cs:
+            pts = [p for p in c2 if p.on_curve]
+            for t in range(len(pts)):
+                a2, b2 = pts[t], pts[(t + 1) % len(pts)]
+                if not (y0 + 0.35 * H < a2.y < ybar - 2 and y0 + 0.35 * H < b2.y < ybar - 2):
+                    continue
+                if not (a2.x < x0 + 0.40 * W and b2.x < x0 + 0.40 * W):
+                    continue
+                lo, up = (a2, b2) if a2.x < b2.x else (b2, a2)
+                dx, dy = abs(a2.x - b2.x), up.y - lo.y
+                if not (0.015 * W < dx < 0.16 * W and -0.01 * H < dy < 0.10 * H):
+                    continue
+                if vtx is None or lo.y < vtx[1]:
+                    vtx = (float(lo.x), float(lo.y))
+                    hi_y = float(up.y)
+                    which = (lo.x, lo.y, up.x, up.y)
+        if vtx is None:
+            print("mirrorStroke: %s 에서 乀 의 꼭짓점을 못 찾았다" % g.glyphname)
+            continue
+        vtx = (vtx[0], vtx[1] + rise * tw * (hi_y - vtx[1]))
+        tx, ty = x0 + t_mid[0] * W, y0 + t_mid[1] * H
+        ang = math.atan2(ty - vtx[1], tx - vtx[0])
+        L = math.hypot(tx - vtx[0], ty - vtx[1]) * (1.0 + longer * tw)
+        ty = vtx[1] + L * math.sin(ang)
+        ym = (vtx[1] + ty) / 2.0
+        em_ = [t for t in row(ym) if t[0] < x0 + 0.5 * W]
+        thick = (em_[0][1] - em_[0][0]) if em_ else 0.08 * W
+        # 乀 의 축 — 꼭짓점 아래 여러 높이에서 그 획의 한가운데
+        cen = []
+        for k in range(1, 9):
+            yy = vtx[1] - L * k / 9.0
+            rr = [t for t in row(yy) if t[0] < x0 + 0.6 * W]
+            if rr:
+                cen.append(((rr[0][0] + rr[0][1]) / 2.0, yy))
+        if len(cen) < 3:
+            print("mirrorStroke: %s 에서 乀 의 축을 못 쟀다" % g.glyphname)
+            continue
+        wx, wy = cen[-1][0] - vtx[0], cen[-1][1] - vtx[1]
+        wl = math.hypot(wx, wy)
+        wx, wy = wx / wl, wy / wl
+        nxw, nyw = -wy, wx
+        half = thick * spec.get("side", 1.1)
+        wedge = []
+        for c2 in cs:
+            wedge.extend(O.arcs(c2))
+        for A, B, C in ((wx, wy, -(wx * vtx[0] + wy * vtx[1] + L)),
+                        (-wx, -wy, (wx * vtx[0] + wy * vtx[1])),
+                        (nxw, nyw, -(nxw * vtx[0] + nyw * vtx[1] + half)),
+                        (-nxw, -nyw, (nxw * vtx[0] + nyw * vtx[1] - half))):
+            wedge = _pick_loop(O.loop_clip(wedge, A, B, C), vtx)
+            if len(wedge) < 3:
+                break
+        if len(wedge) < 3:
+            print("mirrorStroke: %s 의 乀 에서 쐐기를 못 잘라 냈다" % g.glyphname)
+            continue
+        mir = _move_loop(wedge, psMat.compose(psMat.translate(-vtx[0], 0.0),
+                         psMat.compose(psMat.scale(-1.0, 1.0), psMat.translate(vtx[0], 0.0))))
+        # k — 둘째 꼭짓점 높이에서 그 획의 두께
+        y2 = which[1]
+        rr = [t for t in row(y2) if t[0] <= which[0] + 2 <= t[1] + 2]
+        if not rr:
+            rr = [t for t in row(y2) if t[0] < x0 + 0.5 * W]
+        k = (rr[0][1] - rr[0][0]) if rr else thick
+        top_o = (float(which[2]), float(which[3]))
+        top_m = (2 * vtx[0] - top_o[0], top_o[1])
+        move_x = (top_o[0] - top_m[0]) - k
+        mir = _move_loop(mir, psMat.translate(move_x, 0.0))
+        lay = fontforge.layer()
+        lay.is_quadratic = g.foreground.is_quadratic
+        for c2 in cs:
+            lay += c2.dup()
+        lay += O.loop_contour(mir, g.foreground.is_quadratic)
+        g.foreground = lay
+        g.removeOverlap(); g.correctDirection()
+        g.removeOverlap(); g.correctDirection()     # 점으로만 닿은 둘이 한 윤곽이 되게
+        # V 계곡 — 두 꼭짓점 사이로 패인 점을 모두 지운다
+        ax, bx = sorted((top_m[0] + move_x, top_o[0]))
+        ytop = top_o[1]
+        valley = None
+        lay2 = fontforge.layer()
+        lay2.is_quadratic = g.foreground.is_quadratic
+        for c2 in g.foreground:
+            pts = list(c2)
+            n2 = len(pts)
+            cand = [q for q in range(n2) if pts[q].on_curve and abs(pts[q].y - ytop) < 12
+                    and ax - 25 < pts[q].x < bx + 25]
+            ia = min(cand, key=lambda q: abs(pts[q].x - ax)) if cand else None
+            ib = min(cand, key=lambda q: abs(pts[q].x - bx)) if cand else None
+            if ia is not None and ia == ib:
+                ib = None
+            drop = set()
+            if ia is not None and ib is not None:
+                for st, en in ((ia, ib), (ib, ia)):
+                    path = []
+                    q = st
+                    while True:
+                        q = (q + 1) % n2
+                        if q == en or len(path) > n2:
+                            break
+                        path.append(q)
+                    if not path:
+                        continue
+                    lowest = min(pts[q].y for q in path)
+                    if lowest < ytop - 1 and all(pts[q].y <= ytop + 1 for q in path) and len(path) < n2 // 2:
+                        drop = set(path)
+                        valley = len(path)
+                        break
+            nc = fontforge.contour()
+            nc.is_quadratic = c2.is_quadratic
+            for k2, p2 in enumerate(pts):
+                if k2 not in drop:
+                    nc += fontforge.point(p2.x, p2.y, p2.on_curve)
+            nc.closed = c2.closed
+            lay2 += nc
+        g.foreground = lay2
+        g.removeOverlap(); g.correctDirection()
+        tidied, _ = O.tidy(list(g.foreground))
+        lay3 = fontforge.layer()
+        lay3.is_quadratic = g.foreground.is_quadratic
+        for c2 in tidied:
+            lay3 += c2
+        g.foreground = lay3
+        g.width = wd
+        done.append("%s k %d · 계곡 %s점" % (g.glyphname, round(k), valley))
+    if done:
+        print("mirrorStroke: %s" % ", ".join(done))
+
+
+# --------------------------------------------------------------------------
+# 점 찍기
+# --------------------------------------------------------------------------
+
+
+@op("addDot")
+def op_add_dot(ctx, font, spec, source_half):
+    """者 계열의 耂 아래에 점을 하나 찍는다 — 같은 글꼴 灬 의 점을 떼어 눕혀 놓는다.
+
+    편수자료의 者 는 耂 의 긴 가로획과 日 사이에 점이 있다(者 는 본디 이 점까지
+    한 글자다). Plex JP 에는 없다. 점은 그리지 않고 點·黨 의 灬 에서 떼어 온다 —
+    넷 가운데 기울기가 `angle` 에 가장 가까운 것을 골라 그 각으로 눕히고, 굵기는
+    `thick`, 길이는 굵기마다 `length` 몫으로 줄인다. 셈은 `hapchija.dots` 에 있다.
+
+    자리:
+      * 세로 — 가로획 아랫변과 日 윗변 사이의 틈을 위 `topShare` : 아래로 나눈다.
+        틈이 점보다 좁으면 아래로 묻어 위쪽에 `minTop` 만큼 흰 자리를 남긴다.
+      * 가로 — 점의 축을 늘이면 가로획과 丿 이 만나는 모서리를 가리키게 한다.
+        丿 은 가로획 오른끝에서 `rx` × 가로획 길이만큼 들어간 자리에서 찾는다
+        (Source Han Sans K 에서 잰 몫).
+      * 틈이 없는 굵기에서는 축을 따라 위로 올리되 위 획과 `clear` 만큼 띄운다.
+
+        {"op": "addDot", "donors": "黨點", "angle": 50, "thick": 0.78,
+         "length": {"Thin": 0.60, …, "Bold": 0.79}, "clear": 3,
+         "at": {"者": {"win": [0, 1], "rx": 0.195}, …}, "cps": ["8005", …]}
+
+    `at` 의 `win` 은 가로획을 찾을 가로 창(먹 폭 대비)이다 — 諸 渚 猪 는 변을 빼고,
+    都 는 阝 를 뺀다. `dy` 는 글자마다 더 내리는 몫(틈 대비).
+    """
+    from fontTools.ttLib import TTFont
+    from . import dots as D
+    path = font.path
+    C = dict(DONOR=spec.get("donors", "黨點"), ANGT=float(spec.get("angle", 50.0)),
+             STH=float(spec.get("thick", 0.78)), LEN=float(spec.get("lengthDefault", 0.60)),
+             LENW=spec.get("length", {}), TOPSHARE=float(spec.get("topShare", 0.70)),
+             MINTOP=float(spec.get("minTop", 0.12)), SINK=float(spec.get("sink", 0.45)),
+             WIN={k: tuple(v.get("win", [0, 1])) for k, v in spec["at"].items()},
+             REF={k: {"rx": v["rx"]} for k, v in spec["at"].items()},
+             DY={k: v["dy"] for k, v in spec["at"].items() if "dy" in v})
+    size = float(spec.get("size", 1.0))
+    clear = int(spec.get("clear", 3))
+    tt = TTFont(path, lazy=True)
+    dot = D.pick_dot(tt, C)
+    if dot is None:
+        print("addDot: 灬 에서 점을 못 골랐다")
+        return
+    a, dch, c, (x0, y0, x1, y1) = dot
+    src = font[ord(dch)]
+    di = None
+    for i, k in enumerate(src.foreground):
+        xs = [p.x for p in k]; ys = [p.y for p in k]
+        if (abs(min(xs) - x0) < 1.5 and abs(min(ys) - y0) < 1.5
+                and abs(max(xs) - x1) < 1.5 and abs(max(ys) - y1) < 1.5):
+            di = i
+            break
+    if di is None:
+        print("addDot: %s 에서 고른 점의 윤곽을 못 찾았다" % dch)
+        return
+    wname = ctx.style["name"]
+    done = []
+    for g in selected_glyphs(font, spec):
+        ch = chr(g.unicode)
+        if ch not in spec["at"]:
+            continue
+        b, gmask, _ = D.bar(path, ch, C)
+        got = D.place(ch, b, gmask, dot, size, clear, wname, C)
+        if not got:
+            print("addDot: %s 에 놓을 자리를 못 찾았다" % g.glyphname)
+            continue
+        dx, dy, sl, st, cx, cy = got[:6]
+        wd = g.width
+        part = fontforge.layer()
+        part.is_quadratic = src.foreground.is_quadratic
+        part += src.foreground[di]
+        part.transform(psMat.compose(
+            psMat.translate(-(x0 + x1) / 2.0, -(y0 + y1) / 2.0),
+            psMat.compose(psMat.rotate(math.radians(a)),
+                          psMat.compose(psMat.scale(sl, st),
+                                        psMat.compose(psMat.rotate(math.radians(-C["ANGT"])),
+                                                      psMat.translate(cx + dx, cy + dy))))))
+        new = fontforge.layer()
+        new.is_quadratic = g.foreground.is_quadratic
+        for k in g.foreground:
+            new += k
+        for k in part:
+            new += k
+        g.foreground = new
+        g.removeOverlap(); g.correctDirection()
+        g.width = wd
+        done.append("%s(%s %.2f×%.2f @%d,%d)" % (ch, dch, sl, st, round(cx), round(cy)))
+    if done:
+        print("addDot: %s" % " ".join(done))

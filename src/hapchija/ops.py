@@ -23,6 +23,9 @@ import fontforge
 import psMat
 
 from .recipe import cp, cp_range
+from . import outline as O
+
+_LENT = {}                  # 다른 굵기·다른 소스에서 빌려 연 글꼴 — 한 번만 연다
 
 OPS = {}
 
@@ -309,6 +312,248 @@ def run(ctx, font, ops, source_half=None):
         handler(ctx, font, spec, source_half)
 
 
+def pick_boxes(glyph, boxes, em):
+    """상자에 자면 상자가 온전히 드는 윤곽 — (번호들, 왼끝, 오른끝) 또는 None.
+
+    boxes 는 [x0, y0, x1, y1(, 최소 가로 폭)] 이고 x 는 글자 폭, y 는 em 에 대한 비율.
+    """
+    width = glyph.width or em
+    out = []
+    for i, contour in enumerate(glyph.foreground):
+        xs = [p.x for p in contour]
+        ys = [p.y for p in contour]
+        lo_x, hi_x = min(xs) / width, max(xs) / width
+        lo_y, hi_y = min(ys) / em, max(ys) / em
+        for b in boxes:
+            x0, y0, x1, y1 = b[:4]
+            span = b[4] if len(b) > 4 else 0      # 최소 가로 폭 (글자 폭 대비)
+            if (x0 <= lo_x and hi_x <= x1 and y0 <= lo_y and hi_y <= y1
+                    and hi_x - lo_x >= span):
+                out.append(i)
+                break
+    if not out:
+        return None
+    xs = [p.x for i in out for p in glyph.foreground[i]]
+    return out, min(xs), max(xs)
+
+
+def lighter_glyphs(ctx, code, split_tmpl):
+    """같은 글자의 가는 굵기 글리프들 — 가장 가는 것부터 지금 굵기 바로 앞까지."""
+    if not split_tmpl:
+        return []
+    me = ctx.style
+    same = [st for st in ctx.recipe["styles"]
+            if st.get("italic", False) == me.get("italic", False)
+            and st["weight"] < me["weight"]]
+    out = []
+    for st in sorted(same, key=lambda st: st["weight"]):
+        path = ctx.path(split_tmpl, st)
+        f = _PRISTINE.get(path)
+        if f is None:
+            f = _PRISTINE[path] = _open_pristine(path)
+        if code in f:
+            out.append(f[code])
+    return out
+
+
+_PRISTINE = {}                  # 안내로 빌려 연 **손대지 않은** 소스 글꼴
+
+
+def _open_pristine(path):
+    """소스 글꼴을 **따로** 연다 — 빌드가 열어 고치고 있는 글꼴과 섞이지 않게.
+
+    FontForge 는 이미 열린 파일을 다시 열면 같은 글꼴 객체를 돌려준다. 그러면 앞
+    굵기를 지으며 op 이 이미 고친 글리프를 안내로 쓰게 된다 (祈 ExtraLight 가 고쳐진
+    Thin 의 祈 를 안내 삼아 礻 삐침을 남겼다). 그리고 빌드가 그 글꼴을 닫으면 여기
+    들고 있던 것도 닫힌다. 그래서 임시 자리에 복사해 그것을 연다.
+    """
+    import shutil
+    import tempfile
+    d = tempfile.mkdtemp(prefix="hapchija-guide-")
+    q = os.path.join(d, os.path.basename(path))
+    shutil.copyfile(path, q)
+    return fontforge.open(q)
+
+
+def isolate_part(ctx, glyph, code, bxs, split_tmpl, em):
+    """상자 자리의 성분(변)과 나머지(방)를 뗀다 — (조각 윤곽들, 남길 윤곽들, 왼끝, 오른끝).
+
+    상자로 고른 윤곽 수가 가장 가는 굵기와 같으면 그대로 뗀다. 다르면 성분이 방과
+    녹아붙은 것이다 — 같은 수가 골라지는 가장 굵은 가는 굵기를 안내로 삼아
+    outline.split_glyph 로 가른다. 못 떼면 None.
+    """
+    got = pick_boxes(glyph, bxs, em)
+    thin = lighter_glyphs(ctx, code, split_tmpl)
+    base = pick_boxes(thin[0], bxs, em) if thin else None
+    cs = list(glyph.foreground)
+    if got is not None and (base is None or len(got[0]) == len(base[0])):
+        part = [cs[i] for i in got[0]]
+        rest = [c for i, c in enumerate(cs) if i not in got[0]]
+        return part, rest, got[1], got[2]
+    if base is None:
+        return None
+    guide = None
+    for g in reversed(thin):               # 지금 굵기에 가장 가까운 떨어진 굵기
+        gp = pick_boxes(g, bxs, em)
+        if gp is not None and len(gp[0]) == len(base[0]):
+            gcs = list(g.foreground)
+            guide = ([gcs[i] for i in gp[0]], [c for i, c in enumerate(gcs) if i not in gp[0]])
+            break
+    if guide is None:
+        return None
+    part, rest = O.split_glyph(cs, guide[0], guide[1])
+    if not part or not rest:
+        return None
+    xs = [p.x for c in part for p in c]
+    return part, rest, min(xs), max(xs)
+
+
+def _polys(contours):
+    return [[(p.x, p.y) for p in O._flat_pts(c)] for c in contours]
+
+
+def _hits(a, bs, room):
+    """다각형 a 가 다각형들 bs 와 겹치거나 `room` 안으로 다가가는가 (변끼리의 거리로)."""
+    def seg_d(p, q, r, s):
+        def pd(x, y, u, v, w, z):
+            dx, dy = w - u, z - v
+            L2 = dx * dx + dy * dy
+            t = 0.0 if not L2 else max(0.0, min(1.0, ((x - u) * dx + (y - v) * dy) / L2))
+            return math.hypot(x - (u + t * dx), y - (v + t * dy))
+        d1 = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        d2 = (q[0] - p[0]) * (s[1] - p[1]) - (q[1] - p[1]) * (s[0] - p[0])
+        d3 = (s[0] - r[0]) * (p[1] - r[1]) - (s[1] - r[1]) * (p[0] - r[0])
+        d4 = (s[0] - r[0]) * (q[1] - r[1]) - (s[1] - r[1]) * (q[0] - r[0])
+        if (d1 > 0) != (d2 > 0) and (d3 > 0) != (d4 > 0):
+            return 0.0
+        return min(pd(*p, *r, *s), pd(*q, *r, *s), pd(*r, *p, *q), pd(*s, *p, *q))
+
+    def inside(pt, poly):
+        x, y = pt
+        got = False
+        for k in range(len(poly)):
+            (x1, y1), (x2, y2) = poly[k - 1], poly[k]
+            if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+                got = not got
+        return got
+
+    ax = [p[0] for p in a]; ay = [p[1] for p in a]
+    for b in bs:
+        bx = [p[0] for p in b]; by = [p[1] for p in b]
+        if max(ax) + room < min(bx) or max(bx) + room < min(ax) or \
+                max(ay) + room < min(by) or max(by) + room < min(ay):
+            continue
+        if inside(a[0], b) or inside(b[0], a):
+            return True
+        for i in range(len(a)):
+            for j in range(len(b)):
+                if seg_d(a[i - 1], a[i], b[j - 1], b[j]) <= room:
+                    return True
+    return False
+
+
+def _clear_right(layer, body, room, step=2.0):
+    """오른쪽 아래 획이 몸과 `room` 안으로 닿지 않을 때까지 `step` 유닛씩 줄인다."""
+    cs = list(layer)
+    k = _right_stroke(cs)
+    if k is None:
+        return layer
+    bodies = _polys(list(body))
+    h = O.box(cs[k])[3] - O.box(cs[k])[2]
+    cut = 0.0
+    cur = layer
+    while _hits(_polys([list(cur)[k]])[0], bodies, room) and cut < 0.7 * h:
+        cut += step
+        cur = _shorten_right(layer, cut)
+    return cur
+
+
+def _style_ctx(ctx, style):
+    import copy
+    c = copy.copy(ctx)
+    c.style = style
+    return c
+
+
+def _dot_length(ctx, style, code, bxs, split_tmpl, em):
+    """그 굵기(style) 소스에서 글자 code 의 示 오른쪽 점 세로 길이."""
+    path = ctx.path(split_tmpl, style)
+    f = _PRISTINE.get(path)
+    if f is None:
+        f = _PRISTINE[path] = _open_pristine(path)
+    if code not in f:
+        return None
+    iso = isolate_part(_style_ctx(ctx, style), f[code], code, bxs, split_tmpl, em)
+    if not iso:
+        return None
+    k = _right_stroke(list(iso[0]))
+    if k is None:
+        return None
+    b = O.box(list(iso[0])[k])
+    return b[3] - b[2]
+
+
+def _ramp_length(ctx, donor_code, ref_code, bxs, split_tmpl, em):
+    me = ctx.style
+    same = sorted((st for st in ctx.recipe["styles"]
+                   if st.get("italic", False) == me.get("italic", False)),
+                  key=lambda st: st["weight"])
+    lo, hi = same[0], same[-1]
+    a = _dot_length(ctx, lo, donor_code, bxs, split_tmpl, em)
+    # ref 가 숫자면 가장 굵은 굵기의 길이(유닛) 그대로, 글자면 그 글자의 가장 굵은 굵기에서 잰다
+    b = float(ref_code) if isinstance(ref_code, float) or (isinstance(ref_code, int) and ref_code < 0x3000) \
+        else _dot_length(ctx, hi, ref_code, bxs, split_tmpl, em)
+    if a is None or b is None or hi["weight"] == lo["weight"]:
+        return None
+    t = (me["weight"] - lo["weight"]) / float(hi["weight"] - lo["weight"])
+    return a + (b - a) * t
+
+
+def _right_stroke(cs):
+    """조각 윤곽들 가운데 **오른쪽 아래 획**(示 의 오른쪽 점)의 번호 — 가장 넓은 윤곽(긴
+    가로획)을 뺀 나머지 가운데 왼끝이 가장 오른쪽인 것."""
+    if len(cs) < 2:
+        return None
+    boxes = [O.box(c) for c in cs]
+    widest = max(range(len(cs)), key=lambda i: boxes[i][1] - boxes[i][0])
+    rest = [i for i in range(len(cs)) if i != widest]
+    return max(rest, key=lambda i: boxes[i][0])
+
+
+def _shorten_right(layer, by):
+    """조각에서 **오른쪽 아래 획**(示 의 오른쪽 점)을 `by` 유닛 줄인다 — 늘이거나 누르지 않고.
+
+    가장 넓은 윤곽(긴 가로획)을 뺀 나머지 가운데 왼끝이 가장 오른쪽인 것이 그 획이다.
+    획의 축(위쪽 복판 → 아래쪽 복판)을 재고, **아래 끝의 점들만** 축을 따라 `by` 만큼
+    위로 끌어올린다. 굵기와 기울기는 그대로다.
+    """
+    cs = list(layer)
+    k = _right_stroke(cs)
+    if k is None or by == 0:
+        return layer                                     # by < 0 이면 그만큼 늘인다 (축을 따라 내림)
+    x0, x1, y0, y1 = O.box(cs[k])
+    h = y1 - y0
+    pts = [(p.x, p.y) for p in cs[k]]
+    top = [p for p in pts if p[1] >= y1 - 0.2 * h]
+    bot = [p for p in pts if p[1] <= y0 + 0.2 * h]
+    tx, ty = sum(p[0] for p in top) / len(top), sum(p[1] for p in top) / len(top)
+    bx, by_ = sum(p[0] for p in bot) / len(bot), sum(p[1] for p in bot) / len(bot)
+    L = math.hypot(tx - bx, ty - by_) or 1.0
+    ux, uy = (tx - bx) / L, (ty - by_) / L              # 아래 끝 → 위 끝
+    cut = y0 + 0.35 * h                                  # 아래 끝으로 치는 점들
+    step = by / uy if uy > 0.3 else by                    # 세로 길이로 by 만큼 줄도록
+    c = cs[k].dup()
+    for p in c:
+        if p.y <= cut:
+            p.x += ux * step
+            p.y += uy * step
+    out = fontforge.layer()
+    out.is_quadratic = layer.is_quadratic
+    for i, cc in enumerate(cs):
+        out += c if i == k else cc
+    return out
+
+
 @op("graftPart")
 def op_graft_part(ctx, font, spec, source_half):
     """한 글자의 일부를 떼고, 다른 글자의 같은 자리 조각을 옮겨 붙인다.
@@ -351,44 +596,40 @@ def op_graft_part(ctx, font, spec, source_half):
     em = ctx.em_ascent + ctx.em_descent
     fit = spec.get("fit", "width")
 
-    def pick(glyph, boxes):
-        width = glyph.width or em
-        out = []
-        for i, contour in enumerate(glyph.foreground):
-            xs = [p.x for p in contour]
-            ys = [p.y for p in contour]
-            lo_x, hi_x = min(xs) / width, max(xs) / width
-            lo_y, hi_y = min(ys) / em, max(ys) / em
-            for b in boxes:
-                x0, y0, x1, y1 = b[:4]
-                span = b[4] if len(b) > 4 else 0      # 최소 가로 폭 (글자 폭 대비)
-                if (x0 <= lo_x and hi_x <= x1 and y0 <= lo_y and hi_y <= y1
-                        and hi_x - lo_x >= span):
-                    out.append(i)
-                    break
-        if not out:
-            return None
-        xs = [p.x for i in out for p in glyph.foreground[i]]
-        return out, min(xs), max(xs)
+    def pick(glyph, bxs):
+        return pick_boxes(glyph, bxs, em)
 
     boxes = spec["boxes"]
     donor = font[donor_cp]
-    taken = pick(donor, spec.get("donorBoxes", boxes))
-    if taken is None:
+    d_boxes = spec.get("donorBoxes", boxes)
+
+    # ── 녹아붙은 굵기 (split) ────────────────────────────────────────────────
+    # 굵어지면 礻 의 세로획이 방과 한 윤곽으로 녹아 상자에 온전히 들지 않는다. 그러면
+    # 상자로는 礻 를 못 고르고 그 굵기를 건너뛰었다 (示 변 12자 가운데 Medium 11 ·
+    # SemiBold 6 · Bold 3 자만 바뀌었다). `split` 에 이 소스의 경로 틀을 주면, 상자로
+    # 고른 윤곽 수가 **가장 가는 굵기와 같은 가장 굵은 가는 굵기**를 안내로 삼아
+    # outline.split_glyph 로 변·방을 떼어 방을 남긴다 (기증자도 같다).
+    #   "split": "IBM-Plex-Sans-JP/IBMPlexSansJP-{cjkSrc}.ttf"
+    split_tmpl = spec.get("split")
+
+    def isolate(glyph, code, bxs):
+        return isolate_part(ctx, glyph, code, bxs, split_tmpl, em)
+
+    got_d = isolate(donor, donor_cp, d_boxes)
+    if got_d is None:
         return
-    d_idx, d_x0, d_x1 = taken
+    d_part, _, d_x0, d_x1 = got_d
 
     done = 0
     for glyph in selected_glyphs(font, spec):
-        got = pick(glyph, boxes)
-        if got is None or len(got[0]) == len(glyph.foreground):
+        got = isolate(glyph, glyph.unicode, boxes)
+        if got is None or not got[1]:
             continue                      # 방을 못 고르면 건드리지 않는다
-        t_idx, t_x0, t_x1 = got
+        _, rest_cs, t_x0, t_x1 = got
         kept = fontforge.layer()
         kept.is_quadratic = glyph.foreground.is_quadratic
-        for i, contour in enumerate(glyph.foreground):
-            if i not in t_idx:
-                kept += contour
+        for contour in rest_cs:
+            kept += contour
         scale = 1.0
         if fit == "width" and d_x1 > d_x0:
             scale = (t_x1 - t_x0) / (d_x1 - d_x0)
@@ -399,7 +640,14 @@ def op_graft_part(ctx, font, spec, source_half):
             # 들쭉날쭉해진다 — 남길 몸에서 재어 맞춘다.
             #   gapFrom "right" (기본) 왼끝을 두고 오른끝을 남은 몸 왼쪽에 맞춘다 (示)
             #   gapFrom "left"        오른끝을 두고 왼끝을 남은 몸 오른쪽에 맞춘다 (慨 의 旣)
-            rest = [p.x for c in kept for p in c]
+            # `gapAbove` 를 주면 방의 왼끝을 그 높이(em 대비 y) 위에서만 잰다. 방의 삐침이
+            # 변 밑으로 뻗는 글자(祝 의 儿)는 맨 아래 다리 끝이 가장 왼쪽이라, 거기에 맞추면
+            # 示 가 좁게 눌린다 — 示 의 가로획이 있는 높이에서 재야 한다.
+            above = spec.get("gapAbove")
+            if above is None:
+                rest = [p.x for c in kept for p in c]
+            else:
+                rest = [p.x for c in kept for p in O._flat_pts(c) if p.y >= above * em]
             if not rest:
                 continue
             if spec.get("gapFrom", "right") == "left":
@@ -414,8 +662,45 @@ def op_graft_part(ctx, font, spec, source_half):
             continue
         part = fontforge.layer()
         part.is_quadratic = donor.foreground.is_quadratic
-        for i in d_idx:
-            part += donor.foreground[i]
+        for contour in d_part:
+            part += contour.dup()
+        if spec.get("shortenRight"):
+            part = _shorten_right(part, spec["shortenRight"] * em)
+        if spec.get("rightDotClear") is not None:
+            # 오른쪽 점이 남은 몸과 겹치면, 겹치지 않을 만큼만 줄인다 (늘이지 않는다).
+            # 값은 남길 틈(em 대비). 祉 — 示 의 오른쪽 점이 止 의 밑가로획에 닿는다.
+            part = _clear_right(part, kept, spec["rightDotClear"] * em)
+        if spec.get("rightDotRamp"):
+            # 오른쪽 점 길이를 굵기 따라 **고르게** 바꾼다: 가장 가는 굵기는 기증자 제 길이,
+            # 가장 굵은 굵기는 `rightDotRamp` 글자의 가장 굵은 굵기 길이, 그 사이는 굵기
+            # 값(weight)에 비례한다. 祉 — Thin 은 祋 그대로, Bold 는 祖 와 같게.
+            ramp = spec["rightDotRamp"]
+            want = _ramp_length(ctx, donor_cp, ramp if isinstance(ramp, (int, float)) else cp(ramp),
+                                d_boxes, split_tmpl, em)
+            mk = _right_stroke(list(part))
+            if want is not None and mk is not None:
+                mb = O.box(list(part)[mk])
+                part = _shorten_right(part, (mb[3] - mb[2]) - want)
+        if spec.get("rightDotLike"):
+            # 오른쪽 점을 다른 글자의 示 오른쪽 점 **세로 길이**에 맞춘다. 짧으면 아래 끝을
+            # 제 축을 따라 내리고 길면 올린다 — 배율로 늘이지 않으니 굵기·기울기는 그대로다.
+            # 굵기마다 그 글자의 같은 굵기에서 재므로 맞출 길이가 굵기 따라 맞는다.
+            ref_cp = cp(spec["rightDotLike"])
+            ref = isolate_part(ctx, font[ref_cp], ref_cp, d_boxes, split_tmpl, em) \
+                if ref_cp in font else None
+            if ref:
+                rk, mk = _right_stroke(list(ref[0])), _right_stroke(list(part))
+                if rk is not None and mk is not None:
+                    rb, mb = O.box(list(ref[0])[rk]), O.box(list(part)[mk])
+                    by = (mb[3] - mb[2]) - (rb[3] - rb[2])
+                    if spec.get("rightDotGrow", True) or by > 0:   # false 면 줄이기만
+                        part = _shorten_right(part, by)
+        if fit == "left" and spec.get("gapTo") is not None:
+            # 늘이지 않고 **옮기기만** 해서 방과의 간격을 `gapTo`(em 대비)로 맞춘다.
+            # 한 기증자를 여덟 굵기에 쓰면 간격이 굵기 따라 줄지 않는다 — 굵기마다 값을 준다.
+            rest_x = [p.x for c in kept for p in c]
+            if rest_x:
+                t_x0 = min(rest_x) - spec["gapTo"] * em - (d_x1 - d_x0)
         if fit in ("width", "left", "gap"):
             # "width" 는 떼어 낸 자리의 잉크 폭에 맞춰 가로로만 늘이고, "left" 는
             # 늘이지 않고 **왼끝만 맞춰 옮긴다**. 示 는 礻 보다 좁아서(341 ↔ 426)
@@ -429,6 +714,10 @@ def op_graft_part(ctx, font, spec, source_half):
         width = glyph.width
         glyph.foreground = kept
         glyph.correctDirection()   # 윤곽을 다시 담으면 안팎 방향이 흐트러져 속공간이 메워진다
+        if spec.get("merge"):
+            # 옮겨 붙인 조각이 남은 몸과 겹치면 두 윤곽을 하나로 합친다 (祈 — 示 의
+            # 오른쪽 점이 斤 의 丿 에 닿는 굵기). 겹친 채 두면 윤곽이 서로 파고든다.
+            glyph.removeOverlap()
         glyph.width = width
         done += 1
     if done:

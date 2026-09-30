@@ -2792,7 +2792,66 @@ def knife_bands(contours, min_share=0.07, base=1000):
     return [(base - (r0 + b), base - (r0 + a)) for a, b, _ in segs][::-1]
 
 
-def _widen_plan(contours, delta, band, cut_tall, merge, share='even'):
+def _dodge(lo, hi, avoid, band=None):
+    """칼선을 찾을 범위 [lo, hi] 에서 `avoid` 의 x 범위들을 비켜 가장 넓게 남는 쪽.
+
+    avoid 의 항목은 (x0, x1) 이거나 (x0, x1, y0, y1) — 뒤의 것은 그 높이에 걸친 띠에만 건다.
+    """
+    if not avoid:
+        return lo, hi
+    free = [(lo, hi)]
+    for item in avoid:
+        a, b = item[0], item[1]
+        if len(item) > 2 and band is not None and (band[1] < item[2] or band[0] > item[3]):
+            continue
+        nxt = []
+        for p, q in free:
+            if b <= p or a >= q:
+                nxt.append((p, q))
+                continue
+            if a > p:
+                nxt.append((p, a))
+            if b < q:
+                nxt.append((b, q))
+        free = nxt
+    if not free:
+        return lo, lo                     # 찾을 데가 없다 — flat_cut 이 None 을 낸다
+    return max(free, key=lambda r: r[1] - r[0])
+
+
+def narrow_across(contours, delta, lo, hi, avoid=None, tall=0.15, below=None):
+    """**가로획만** 잘라 줄이거나(delta<0) 늘인다(delta>0) — 칼선 하나로.
+
+    lo..hi 사이에서 위에서 아래까지 **가로변만 지나는** 세로 칼선 하나를 찾고
+    (`flat_cut`), 칼선 오른쪽의 점들을 delta 만큼 옮긴다. 칼선이 지나는 가로획만
+    길이가 바뀌고, 세로선과 획 두께는 그대로다. `avoid` 의 x 범위에는 칼선을 두지
+    않는다 — 자르면 안 되는 획(慨 에 붙이는 皀 의 맨 위 삐침)을 비켜 간다.
+
+    `widen_across` 는 높이 띠마다 칼날을 따로 잡는데, 조각 안에 칸이 층층이 있으면
+    (굵은 굵기의 皀) 띠에서 조각 경계를 잡지 못해 자리를 못 찾는다. 칼선 하나로
+    되는 조각은 이것을 쓴다. 돌아오는 것은 (새 윤곽, 칼선 x) — 못 찾으면 (None, None).
+
+    `below` 를 주면 그 높이 **아래에서만** 칼선을 찾고 옮긴다 — 그 위의 점은 그대로.
+    굵은 굵기의 皀 는 맨 위 삐침이 오른쪽 세로선 안쪽까지 닿아, 위에서 아래까지 한
+    칼선으로는 삐침을 비켜 갈 자리가 없다. 네모 윗변 아래만 자르면 된다.
+    """
+    lo, hi = _dodge(lo, hi, avoid)
+    y0 = bbox(contours)[2]
+    band = (y0, below - 1) if below is not None else None
+    t = flat_cut(contours, lo, hi, tall=tall, band=band)
+    if t is None:
+        return None, None
+    out = []
+    for c in contours:
+        c = c.dup()
+        for p in c:
+            if p.x > t and (below is None or p.y <= below + 0.5):
+                p.x += delta
+        out.append(c)
+    return out, t
+
+
+def _widen_plan(contours, delta, band, cut_tall, merge, share='even', avoid=None):
     """한 띠의 계획 — (조각들, 칼날 자리, 조각마다 옮길 몫).
 
     틈마다 자를 자리를 찾아보고, 못 찾으면(Bold 처럼 점과 벽이 거의 붙은 데)
@@ -2817,6 +2876,7 @@ def _widen_plan(contours, delta, band, cut_tall, merge, share='even'):
         # 복판까지 넓혀 찾되, 고르는 기준은 틈의 한가운데다.
         lo = (segs[i - 1][0] + segs[i - 1][1]) / 2.0
         hi = (segs[i][0] + segs[i][1]) / 2.0
+        lo, hi = _dodge(lo, hi, avoid, band)
         # 칼날 하나로 가르는 띠는 **먹의 한가운데**, 여럿이면 저마다 틈의 한가운데.
         aim = ((segs[0][0] + segs[-1][1]) / 2.0 if len(segs) == 2
                else (segs[i - 1][1] + segs[i][0]) / 2.0)
@@ -2827,8 +2887,8 @@ def _widen_plan(contours, delta, band, cut_tall, merge, share='even'):
             cuts.append(t)
             groups.append([segs[i]])
     if len(groups) < 2:
-        t = flat_cut(contours, x0 + 0.25 * (x1 - x0), x0 + 0.75 * (x1 - x0),
-                     tall=cut_tall, band=band)
+        lo, hi = _dodge(x0 + 0.25 * (x1 - x0), x0 + 0.75 * (x1 - x0), avoid, band)
+        t = flat_cut(contours, lo, hi, tall=cut_tall, band=band)
         if t is None:
             return segs, None, None, '가로변만 지나는 자리를 못 찾았다'
         return segs, [t], [-delta / 2.0, delta / 2.0], None
@@ -2857,7 +2917,7 @@ def _widen_plan(contours, delta, band, cut_tall, merge, share='even'):
 
 
 def widen_across(contours, delta, bands=None, cut_tall=0.25, merge=4,
-                 min_share=0.07, anchor='center', share='even'):
+                 min_share=0.07, anchor='center', share='even', avoid=None):
     """**가로 확장** — 가로획만 늘이고 세로선은 자리만 옮긴다. 확대가 아니다.
 
     가로로 늘이면 세로획까지 굵어진다(益 을 1.32배 늘이면 皿 의 세로획이
@@ -2877,6 +2937,12 @@ def widen_across(contours, delta, bands=None, cut_tall=0.25, merge=4,
     해 나눌지('gap') 이다. 益 의 皿 은 칸이 96·96·101 이라 even 이면 172·171·177,
     gap 이면 170·171·179 가 된다.
 
+    `avoid` 는 칼선을 두지 않을 x 범위들이다 [(x0, x1), …] — (x0, x1, y0, y1) 로 주면
+    그 높이에 걸친 띠에만 건다. 자르면 안 되는 획이
+    가로획 위를 지날 때 준다 (慨 에 옮겨 붙이는 皀 의 맨 위 삐침 — 굵은 굵기에서는
+    네모 칸 위를 덮어, 비켜 가지 않으면 칼선 자리가 없다). delta 를 음수로 주면
+    가로획만 줄인다.
+
     `bands` 에 높이 띠를 손수 줄 수도 있다. `anchor` 는 어디를 붙박이로 두느냐다
     — 'center' 면 좌우로 반씩, 'left'·'right' 면 그쪽 끝을 두고 반대쪽으로만
     벌린다(僧 의 방은 亻 쪽으로만 벌려야 해서 'right' 로 둔다).
@@ -2888,7 +2954,7 @@ def widen_across(contours, delta, bands=None, cut_tall=0.25, merge=4,
     m = part_mask(contours)
 
     def plan_of(b):
-        segs, cuts, move, why = _widen_plan(contours, delta, b, cut_tall, merge, share)
+        segs, cuts, move, why = _widen_plan(contours, delta, b, cut_tall, merge, share, avoid)
         if cuts is None:
             return None, why
         if anchor == 'left':
