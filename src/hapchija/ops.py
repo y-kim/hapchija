@@ -227,22 +227,143 @@ def op_embolden(ctx, font, spec, source_half):
         glyph.changeWeight(gx, "LCG", 0, 0, "squish")
         glyph.transform(psMat.scale(1, 1 / stretch))
         glyph.removeOverlap()
+        _straighten(glyph)
         glyph.correctDirection()
         glyph.round()
         glyph.width = width
 
-    done = plain = 0
-    for glyph in list(font.glyphs()):
-        if glyph.glyphname.startswith("_compose") or len(glyph.foreground) == 0:
-            continue
-        before = glyph.foreground.dup()
+    def fits(glyph, box, ex, ey):
+        # 굵힌 만큼만 커졌는가 — 3차 곡선의 removeOverlap 은 가끔 윤곽 한쪽을 통째로
+        # 잃는다 (Text 의 ⁸ 는 윗고리가 사라진다).
+        if any(c.isClockwise() == -1 for c in glyph.foreground):
+            return False             # 꼬여 방향을 못 잡는 윤곽 (Light 의 ѫ — 구멍이 메워진다)
+        x0, y0, x1, y1 = glyph.boundingBox()
+        tol = max(4.0, gx)
+        return (abs(x0 - (box[0] - ex)) <= tol and abs(x1 - (box[2] + ex)) <= tol
+                and abs(y0 - (box[1] - ey)) <= tol and abs(y1 - (box[3] + ey)) <= tol)
+
+    def attempt(glyph, before):
+        """늘린 자리에서, 안 되면 고르게. 윤곽 수와 먹 상자가 맞으면 True."""
+        box = before.boundingBox()
+        grow(glyph, k)
+        if len(glyph.foreground) == len(before) and fits(glyph, box, gx / 2, gy / 2):
+            return True, False
+        glyph.foreground = before
+        grow(glyph, 1)
+        return len(glyph.foreground) == len(before) and fits(glyph, box, gx / 2, gx / 2), True
+
+    # changeWeight 는 2차 곡선의 곧은 사선을 곡선으로 돌려준다. 조절점이 선 밖으로
+    # 크게 벗어나 획이 휜다 (1.2.0 Regular 의 7 · Z, Thin 의 4 · N). 그래서 3차 곡선에서
+    # 굵히고, 거의 곧은 곡선은 직선으로 편 뒤 (_straighten) 되돌린다.
+    # 3차 곡선에서 망가지는 글자는 (윤곽 수나 먹 상자가 어긋남) 2차 곡선 그대로 굵힌다.
+    fore = font.layers["Fore"]
+    quadratic = fore.is_quadratic
+    targets = [g for g in font.glyphs()
+               if not g.glyphname.startswith("_compose") and len(g.foreground)]
+    originals = {g.glyphname: g.foreground.dup() for g in targets}
+    fore.is_quadratic = False
+
+    plain = 0
+    retry = []
+    for glyph in targets:
+        ok, flat = attempt(glyph, glyph.foreground.dup())
+        plain += flat
+        if not ok:
+            retry.append(glyph)
+    fore.is_quadratic = quadratic
+    for glyph in targets:
+        # 3차 곡선의 removeOverlap 은 가끔 꼬인 윤곽을 남겨 방향을 못 잡는다 (Light 의
+        # ѫ 바깥 윤곽이 꼬여 구멍이 메워짐). 2차 곡선에서 한 번 더 풀고 방향을 잡는다.
+        kept = glyph.foreground.dup()
+        glyph.removeOverlap()
+        if len(glyph.foreground) != len(kept):
+            glyph.foreground = kept  # 좁은 틈을 닫으면 버린다 (Bold 의 ↔ 화살촉과 몸통 사이 4 단위)
+        glyph.correctDirection()
+        glyph.round()
+        _straighten(glyph)           # 여기서 다시 생기는 크기 0 윤곽과 곧은 점에 붙은 조절점을 치운다
+    for glyph in retry:                 # 1.2.0 과 똑같이 — 윤곽 수가 바뀔 때만 고르게
+        before = originals[glyph.glyphname]
+        glyph.foreground = before
         grow(glyph, k)
         if len(glyph.foreground) != len(before):
             glyph.foreground = before
             grow(glyph, 1)
-            plain += 1
-        done += 1
-    print("embolden: %d 자 (세로획 +%.1f, 가로획 +%.1f; 고르게 %d 자)" % (done, gx, gy, plain))
+    print("embolden: %d 자 (세로획 +%.1f, 가로획 +%.1f; 고르게 %d 자, 2차 곡선으로 %d 자 %s)"
+          % (len(targets), gx, gy, plain, len(retry), " ".join(g.glyphname for g in retry[:12])))
+
+
+def _straighten(glyph, tol=3.0):
+    """거의 곧은 곡선을 직선으로 펴고, 모서리에 남은 실낱 윤곽을 버린다.
+
+    곧은 점 사이의 조절점들이 현에서 `tol` 안이면서 현 길이의 3% 안이면 (Regular 7 의
+    밑변에 남은 2 단위 혹) 직선으로 편다 — 작은 점의 둥근 곡선은 3% 를 넘어 남는다.
+    조절점 하나가 곧은 점에 3 단위 안으로 붙어 있으면 (SemiBold ✓ 의 팔 끝) 그 곡선은
+    출발 방향이 꺾여 다시 굵힐 때 가시가 솟으므로 버린다. 가로나 세로 2 단위 미만의
+    윤곽은 changeWeight 가 모서리에 남긴 실낱이라 버린다 (반올림하면 퇴화해 FontForge 가
+    죽는다). 곧은 점이 셋 미만인 윤곽(쉼표)은 펴지 않는다."""
+    lay = glyph.foreground
+    out = fontforge.layer()
+    out.is_quadratic = lay.is_quadratic
+    changed = False
+    for c in lay:
+        x0, y0, x1, y1 = c.boundingBox()
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            changed = True
+            continue
+        pts = list(c)
+        n = len(pts)
+        ons = [i for i, p in enumerate(pts) if p.on_curve]
+        if len(ons) < 3:
+            out += c
+            continue
+        keep = [True] * n
+        for k, i in enumerate(ons):
+            j = ons[(k + 1) % len(ons)]
+            mids = [(i + m) % n for m in range(1, (j - i) % n or n)]
+            if not mids:
+                continue
+            a, b = pts[i], pts[j]
+            dx, dy = b.x - a.x, b.y - a.y
+            L = math.hypot(dx, dy)
+            if L < 1:
+                continue
+            flat = all(abs((pts[m].x - a.x) * dy - (pts[m].y - a.y) * dx) / L <= min(tol, 0.03 * L)
+                       for m in mids)
+            stub = len(mids) == 1 and min(math.hypot(pts[mids[0]].x - q.x, pts[mids[0]].y - q.y)
+                                          for q in (a, b)) <= 3
+            if flat or stub:
+                for m in mids:
+                    keep[m] = False
+                changed = True
+        pts = [p for i, p in enumerate(pts) if keep[i]]
+        # 직선 둘 사이의 곧은 점이 거의 한 줄 위에 있으면 지운다 — changeWeight 가 완만한
+        # 곡선을 꺾은선으로 돌려주는데 (Bold ✓ 팔 끝의 자른 변), 다시 굵히면 그 꺾인
+        # 자리마다 홈이 팬다 (✔).
+        while True:
+            n = len(pts)
+            on = sum(1 for p in pts if p.on_curve)
+            hit = None
+            for i in range(n):
+                a, p, b = pts[i - 1], pts[i], pts[(i + 1) % n]
+                if not (a.on_curve and p.on_curve and b.on_curve) or on <= 3:
+                    continue
+                dx, dy = b.x - a.x, b.y - a.y
+                L = math.hypot(dx, dy)
+                if L >= 1 and abs((p.x - a.x) * dy - (p.y - a.y) * dx) / L <= min(tol, 0.03 * L):
+                    hit = i
+                    break
+            if hit is None:
+                break
+            del pts[hit]
+            changed = True
+        nc = fontforge.contour()
+        nc.is_quadratic = c.is_quadratic
+        for p in pts:
+            nc += fontforge.point(p.x, p.y, p.on_curve)
+        nc.closed = c.closed
+        out += nc
+    if changed:
+        glyph.foreground = out
 
 
 @op("clear")
@@ -601,6 +722,17 @@ def op_compose(ctx, font, spec, source_half):
     glyph.foreground = kept
     if spec.get("embolden"):
         glyph.changeWeight(_width(font, spec["embolden"]))
+        # 뾰족한 모서리에 먼지 윤곽이 남는다 (ExtraLightItalic ␤ 의 N 에 3×5 셋).
+        # 조립 부품 가운데 가장 작은 점자 점도 40 이 넘는다.
+        lay = glyph.foreground
+        boxes = [c.boundingBox() for c in lay]
+        if any(b[2] - b[0] < 8 and b[3] - b[1] < 8 for b in boxes):
+            out = fontforge.layer()
+            out.is_quadratic = lay.is_quadratic
+            for c, b in zip(lay, boxes):
+                if not (b[2] - b[0] < 8 and b[3] - b[1] < 8):
+                    out += c
+            glyph.foreground = out
     glyph.correctDirection()
     if "width" in spec:
         glyph.width = ctx.width_value(spec["width"], source_half)
