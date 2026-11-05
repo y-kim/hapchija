@@ -101,6 +101,36 @@ def relay(glyph, groups, merge=True):
 # --------------------------------------------------------------------------
 
 
+def _collapse_short(contours, limit=1.6):
+    """1 단위 남짓한 직선 변의 두 끝을 한 점으로 — 굵히거나 잘라 벌린 뒤 모서리에 남는 깎인 턱.
+
+    changeWeight 는 뾰족한 모서리를 1 단위 깎아 두 점으로 남기고 (癒 Text 의 巜),
+    widen_across 도 곡선 이음에 그런 점을 남긴다 (益 Medium). 두 점을 그 가운데 한 점으로
+    합친다. 곡선 조절점이 낀 변은 건드리지 않는다.
+    """
+    out = []
+    for c in contours:
+        pts = list(c)
+        keep = []
+        i, n = 0, len(pts)
+        skip = set()
+        for i in range(n):
+            a, b = pts[i], pts[(i + 1) % n]
+            if i in skip or (i + 1) % n in skip:
+                continue
+            if a.on_curve and b.on_curve and 0 < math.hypot(a.x - b.x, a.y - b.y) < limit and n > 4:
+                skip.add((i + 1) % n)
+                a.x, a.y = (a.x + b.x) / 2.0, (a.y + b.y) / 2.0
+        nc = fontforge.contour()
+        nc.is_quadratic = c.is_quadratic
+        for i, p in enumerate(pts):
+            if i not in skip:
+                nc += fontforge.point(p.x, p.y, p.on_curve)
+        nc.closed = True
+        out.append(nc)
+    return out
+
+
 @op("copyGlyph")
 def op_copy_glyph(ctx, font, spec, source_half):
     """한 글자의 윤곽을 다른 글자에 통째로 옮긴다 — 크기도 자리도 건드리지 않는다.
@@ -164,7 +194,7 @@ def op_copy_glyph(ctx, font, spec, source_half):
                 if wide is None:
                     print("copyGlyph: %s 를 못 벌렸다 — %s" % (glyph.glyphname, info))
                     continue
-                part, note = wide, " 벌림 %d" % round(delta)
+                part, note = _collapse_short(wide), " 벌림 %d" % round(delta)
         relay(glyph, [part])
         done.append(glyph.glyphname + note)
     if done:
@@ -2008,7 +2038,25 @@ def op_short_legs(ctx, font, spec, source_half):
                     floor = max(floor, hi + 1)
         if floor > spec["end"] * em:
             keep = cut(floor)
-        relay(glyph, [keep])
+        # 띠를 1 단위 비켜 둔 자리에 선 점을 다리 변으로 되돌린다 — 그대로 두면 다리 사이
+        # 흰 칸 모서리가 1 단위씩 깎인다 (刪 · 柵 여덟 굵기). 겹친 점은 하나만 남긴다.
+        snap = {}
+        for a, b in legs:
+            snap[a - 1], snap[b + 1] = a, b
+        tidy = []
+        for c in keep:
+            nc = fontforge.contour()
+            nc.is_quadratic = c.is_quadratic
+            prev = None
+            for p in c:
+                x = snap.get(round(p.x), p.x) if abs(p.x - round(p.x)) < 0.01 else p.x
+                if prev and p.on_curve and prev[2] and abs(prev[0] - x) < 0.5 and abs(prev[1] - p.y) < 0.5:
+                    continue
+                nc += fontforge.point(x, p.y, p.on_curve)
+                prev = (x, p.y, p.on_curve)
+            nc.closed = True
+            tidy.append(nc)
+        relay(glyph, [tidy])
         done.append("%s 다리 %s 끝 %d" % (glyph.glyphname, " ".join("%d..%d" % l for l in legs), floor))
     if done:
         print("shortLegs: %s" % ", ".join(done))
@@ -3379,6 +3427,7 @@ def op_graft_narrow(ctx, font, spec, source_half):
             part = built[0] + built[1]
         else:
             part = make(lparts, 1.0, H / lh, 0)
+        part = _collapse_short(part)            # 굵히며 모서리에 남은 1 단위 턱
         pb = O.bbox(part)                       # 오른끝·아래끝을 자리에 댄다
         for c in part:
             c.transform(psMat.translate(slot[1] - pb[1], slot[2] - pb[2]))
