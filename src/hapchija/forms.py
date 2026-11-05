@@ -13,7 +13,6 @@
     copyGlyph    윤곽을 통째로 옮긴다 (한쪽 몸만 가져올 수도 있다)
     swapSide     변 또는 방 하나를 바꾼다 (벌려 넣을 수도 있다)
     carvePart    획 하나를 목에서 잘라 떼어 옮긴다
-    swapRadical  변을 통째로 바꾼다 — 기준 자형으로 가르고, 온전한 변을 끼운다
 """
 
 from __future__ import annotations
@@ -275,7 +274,13 @@ def op_swap_side(ctx, font, spec, source_half):
     있으면 가장 넓은 틈에서 나누고, 한 윤곽으로 이어져 있으면 맞댄 세로 변에서
     자른다. 변·방이 세로로 겹치는 글자도 있으니 (館 의 飠 는 官 밑으로 -14 들어
     간다) 갈린 결과를 상자로 다시 재어 고르면 안 된다.
+
+    합친 op (옵션을 보고 예전 구현으로 넘긴다):
+      `rebuild` 참이면 성분을 세로선에 맞춰 넣는다 (예전 rebuildPart — 慨)
     """
+    if spec.get("rebuild"):
+        return op_rebuild_part(ctx, font, spec, source_half)
+
     side = spec.get("side", "right")
     other = "left" if side == "right" else "right"
     from_side = spec.get("fromSide", side)      # 기증자에서 떼어 올 쪽 (姬 ← 巸 의 왼쪽 𦣝)
@@ -378,7 +383,6 @@ def op_swap_side(ctx, font, spec, source_half):
     if done:
         print("swapSide: %s <- %s 의 %s (%s)"
               % (", ".join(done), donor.glyphname, side, how))
-
 
 
 # --------------------------------------------------------------------------
@@ -733,7 +737,13 @@ def op_stretch_stroke(ctx, font, spec, source_half):
 
     `over` 는 남기고 갈 획 속으로, `overTo` 는 가서 닿는 획 속으로 파고들 몫이다.
     변끼리 딱 맞대면 그 자리에 실낱 같은 흰 줄이 남으므로 반드시 겹쳐야 한다.
+
+    합친 op (옵션을 보고 예전 구현으로 넘긴다):
+      `axis` "h" 면 가로획을 늘인다 (예전 extendBar)
     """
+    if spec.get("axis") == "h":
+        return op_extend_bar(ctx, font, spec, source_half)
+
     up = spec.get("dir", "down") == "up"
     by = spec.get("by")
     if isinstance(by, list):
@@ -843,11 +853,10 @@ def _bar_rows(mask, box):
     return out
 
 
-@op("extendBar")
 def op_extend_bar(ctx, font, spec, source_half):
     """가로획을 오른쪽으로 더 뻗게 한다 — 그 두께 그대로 먹을 한 조각 얹는다.
 
-        {"op": "extendBar", "at": [0.70, 0.20, 0.82, 0.34],
+        {"op": "stretchStroke", "axis": "h", "at": [0.70, 0.20, 0.82, 0.34],
          "to": [0.70, 0.42, 0.82, 0.55], "cps": ["8e60"]}     蹠 — 廿 의 아래 가로획
 
     `at`  늘일 가로획을 찾을 네모. 네모의 왼끝·오른끝을 둘 다 덮는 먹 줄을
@@ -876,7 +885,7 @@ def op_extend_bar(ctx, font, spec, source_half):
         mask = O.part_mask(cs)
         rows = _bar_rows(mask, _in_box(ctx, glyph, spec["at"]))
         if not rows:
-            print("extendBar: %s 에서 가로획을 못 찾았다" % glyph.glyphname)
+            print("stretchStroke h: %s 에서 가로획을 못 찾았다" % glyph.glyphname)
             continue
         lo = O.snap_y(cs, min(r[0] for r in rows) - 0.5)
         hi = O.snap_y(cs, max(r[0] for r in rows) + 0.5)
@@ -888,7 +897,7 @@ def op_extend_bar(ctx, font, spec, source_half):
                 if nxt:
                     ends.append(max(r[1] for r in nxt) if left else min(r[0] for r in nxt))
             if not ends:
-                print("extendBar: %s 에서 닿을 먹을 못 찾았다" % glyph.glyphname)
+                print("stretchStroke h: %s 에서 닿을 먹을 못 찾았다" % glyph.glyphname)
                 continue
             # 비스듬한 획이면 줄마다 끝이 달라진다 — 가장 먼 끝까지 가야 다 닿는다.
             # `nearest` 면 가장 가까운 먹에서 멈춘다 — 廐 의 旡 윗 가로획은 위쪽 줄이
@@ -899,7 +908,7 @@ def op_extend_bar(ctx, font, spec, source_half):
         elif "to" in spec:
             ref = _bar_rows(mask, _in_box(ctx, glyph, spec["to"]))
             if not ref:
-                print("extendBar: %s 에서 닿을 가로획을 못 찾았다" % glyph.glyphname)
+                print("stretchStroke h: %s 에서 닿을 가로획을 못 찾았다" % glyph.glyphname)
                 continue
             to = O.snap_x(cs, min(r[1] for r in ref) if left else max(r[2] for r in ref))
             if spec.get("stopAtInk"):
@@ -935,7 +944,7 @@ def op_extend_bar(ctx, font, spec, source_half):
         relay(glyph, [cs, [piece]])
         done.append("%s %d→%d (y %d..%d)" % (glyph.glyphname, frm, to, lo, hi))
     if done:
-        print("extendBar: %s" % ", ".join(done))
+        print("stretchStroke h: %s" % ", ".join(done))
 
 
 @op("barLength")
@@ -1008,7 +1017,13 @@ def op_even_bar(ctx, font, spec, source_half):
     획(삐침)은 그 가운데 가로획의 왼끝 자리에 선 것이다. 오른쪽 나온 길이는 가로획
     오른끝 − 오른 세로획 오른변. 왼쪽은 왼 세로획 왼변에서 그만큼만 남기고 그
     왼쪽을 떼어 낸다 — 점을 오리지 않고 윤곽의 이음만 바꾸므로 다른 점은 그대로다.
+
+    합친 op (옵션을 보고 예전 구현으로 넘긴다):
+      `bottom` 참이면 맨 아래 가로선 좌우 나온 길이를 같게 (예전 evenOverhang — 益)
     """
+    if spec.get("bottom"):
+        return op_even_overhang(ctx, font, spec, source_half)
+
     done = []
     for glyph in selected_glyphs(font, spec):
         cs = list(glyph.foreground)
@@ -1116,148 +1131,6 @@ def _white_around(runs, v, lo, hi):
     return a, b
 
 
-@op("openBridge")
-def op_open_bridge(ctx, font, spec, source_half):
-    """두 획 사이에 걸친 획 한 토막을 빼 흰 칸을 연다 — 점은 오리지 않고 윤곽만 잇는다.
-
-        {"op": "openBridge", "dir": "h", "at": [0.42, 0.46, 0.58, 0.52], "cps": ["8805"]}
-                                    蠅 — 黽 왼쪽 둘째 칸의 윗가로 토막 (위로 연다)
-        {"op": "openBridge", "dir": "v", "at": [0.62, 0.58, 0.70, 0.72], "cps": ["51de"]}
-                                    凞 — 巳 의 왼쪽 세로 토막 (왼쪽으로 연다)
-
-    `dir`  `"h"` 면 세로획 둘 사이의 가로 토막, `"v"` 면 가로획 둘 사이의 세로 토막.
-    `at`   토막을 찾을 네모. 가운데가 토막 위에 오게 둔다. 토막의 두께는 네모
-           가운데를 지나는 먹으로, 길이는 토막 양옆(위아래)의 흰 자리가 함께 열린
-           폭으로 잰다 — 굵기마다 저절로 맞는다.
-
-    토막의 두 변 위에 모서리 점이 없으면 (변이 곧게 지나가면) 그 자리에 점을 넣고,
-    두 변을 잇던 윤곽을 서로 이어 붙인다. 두 변이 다른 윤곽이면 (흰 칸과 바깥)
-    하나가 되고, 같은 윤곽이면 둘로 갈린다. 마치고 한 줄 위의 남는 점은 지운다.
-    """
-    horiz = spec.get("dir", "h") == "h"
-    done = []
-    for glyph in selected_glyphs(font, spec):
-        cs = list(glyph.foreground)
-        if not cs:
-            continue
-        mask = O.part_mask(cs)
-        x0, y0, x1, y1 = _in_box(ctx, glyph, spec["at"])
-        xc, yc = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-
-        def near(v, horiz_axis):
-            # 토막의 변은 토막 가운데를 곧게 지나는 선분이다 — 그 선분의 좌표를 쓴다.
-            # 가까운 점으로 맞추면 이웃 획의 점에 붙거나 (夔 Bold), 변의 점이 멀리
-            # 있어 못 맞춘다 (凞 Regular).
-            ws = []
-            for c in cs:
-                pts = [q for q in c if q.on_curve]
-                for i, p in enumerate(pts):
-                    q = pts[(i + 1) % len(pts)]
-                    if horiz_axis and abs(p.y - q.y) < 0.5 and min(p.x, q.x) <= xc <= max(p.x, q.x):
-                        ws.append(p.y)
-                    if not horiz_axis and abs(p.x - q.x) < 0.5 and min(p.y, q.y) <= yc <= max(p.y, q.y):
-                        ws.append(p.x)
-            ws = [w for w in ws if abs(w - v) <= 4]
-            return min(ws, key=lambda w: abs(w - v)) if ws else round(v)
-        if horiz:
-            run = next((r for r in _col_runs(mask, xc) if r[0] <= yc <= r[1]), None)
-            if run is None:
-                print("openBridge: %s 에서 토막을 못 찾았다" % glyph.glyphname)
-                continue
-            lo, hi = near(run[0] - 0.5, True), near(run[1] + 0.5, True)
-            ra = _white_around(O.runs(mask[1000 - int(hi + 3)]), xc, -1e9, 1e9)
-            rb = _white_around(O.runs(mask[1000 - int(lo - 3)]), xc, -1e9, 1e9)
-            sides = (("y", hi), ("y", lo))
-            ea, eb = max(ra[0], rb[0]), min(ra[1], rb[1])
-        else:
-            run = next((r for r in O.runs(mask[1000 - int(yc)]) if r[0] <= xc <= r[1]), None)
-            if run is None:
-                print("openBridge: %s 에서 토막을 못 찾았다" % glyph.glyphname)
-                continue
-            lo, hi = near(run[0] - 0.5, False), near(run[1] + 0.5, False)
-            ra = _white_around(_col_runs(mask, lo - 3), yc, -1e9, 1e9)
-            rb = _white_around(_col_runs(mask, hi + 3), yc, -1e9, 1e9)
-            sides = (("x", lo), ("x", hi))
-            ea, eb = max(ra[0], rb[0]), min(ra[1], rb[1])
-        # 끝은 토막의 두 변 위에 선 점에 맞춘다 — 이웃 획의 점에 붙으면 어긋난다
-        axis0 = sides[0][0]
-        on_sides = [(p.x if axis0 == "y" else p.y) for c in cs for p in c if p.on_curve
-                    and any(abs((p.y if a == "y" else p.x) - v) < 0.5 for a, v in sides)]
-
-        def snap(e):
-            near = [w for w in on_sides if abs(w - e) <= 4]
-            return min(near, key=lambda w: abs(w - e)) if near else round(e)
-        ea, eb = snap(ea), snap(eb)
-
-        def key(p, axis, v):
-            return abs((p.y if axis == "y" else p.x) - v) < 0.5
-
-        def along(p, axis):
-            return p.x if axis == "y" else p.y
-
-        def at(axis, v, e):
-            return fontforge.point(e, v, True) if axis == "y" else fontforge.point(v, e, True)
-        # 변이 곧게 지나가는 자리에 모서리 점을 넣는다
-        lists = []
-        for c in cs:
-            pts = list(c)
-            out = []
-            n = len(pts)
-            for i, p in enumerate(pts):
-                out.append(p)
-                q = pts[(i + 1) % n]
-                for axis, v in sides:
-                    if p.on_curve and q.on_curve and key(p, axis, v) and key(q, axis, v):
-                        a, b = along(p, axis), along(q, axis)
-                        for e in sorted((ea, eb), reverse=a > b):
-                            if min(a, b) + 0.5 < e < max(a, b) - 0.5:
-                                out.append(at(axis, v, e))
-            lists.append(out)
-
-        def pair(axis, v):
-            for ci, pts in enumerate(lists):
-                n = len(pts)
-                for i, p in enumerate(pts):
-                    q = pts[(i + 1) % n]
-                    if (p.on_curve and q.on_curve and key(p, axis, v) and key(q, axis, v)
-                            and {round(along(p, axis)), round(along(q, axis))} == {round(ea), round(eb)}):
-                        return ci, i, (i + 1) % n, round(along(p, axis))
-            return None
-        P, Q = pair(*sides[0]), pair(*sides[1])
-        if P is None or Q is None:
-            print("openBridge: %s 에서 토막의 모서리를 못 찾았다" % glyph.glyphname)
-            continue
-        if P[3] == Q[3]:                     # P 의 첫 점은 Q 의 둘째 점과 끝을 같이 한다
-            P, Q = Q, P
-        (cp_, p1, p2, _), (cq, qa, qb, _) = P, Q
-
-        def contour(pts):
-            o = fontforge.contour()
-            o.is_quadratic = cs[0].is_quadratic
-            for p in pts:
-                o += fontforge.point(p.x, p.y, p.on_curve)
-            o.closed = True
-            return o
-        U = lists[cp_]
-        if cp_ != cq:
-            C = lists[cq]
-            joined = U[:p1 + 1] + C[qb + 1:] + C[:qa] + U[p2:]
-            made = [contour(joined)]
-            rest = [contour(l) if k != cp_ else None for k, l in enumerate(lists) if k not in (cp_, cq)]
-        else:
-            n = len(U)
-            l1 = [U[(qb + 1 + k) % n] for k in range((p1 - qb) % n)]        # Qb 다음 … P1
-            l2 = [U[(p2 + k) % n] for k in range((qa - p2) % n)]            # P2 … Qa 앞
-            made = [contour(l1), contour(l2)]
-            rest = [contour(l) for k, l in enumerate(lists) if k != cp_]
-        made, _ = O.tidy(made)
-        relay(glyph, [[r for r in rest if r is not None], made], merge=False)
-        done.append("%s %s %d..%d × %d..%d" % (glyph.glyphname, "가로" if horiz else "세로",
-                                                round(ea), round(eb), round(lo), round(hi)))
-    if done:
-        print("openBridge: %s" % ", ".join(done))
-
-
 @op("flipInner")
 def op_flip_inner(ctx, font, spec, source_half):
     """네모 안의 흰 칸들을 좌우로 뒤집는다 — 안쪽 획이 반대편으로 간다.
@@ -1313,11 +1186,10 @@ def op_flip_inner(ctx, font, spec, source_half):
         print("flipInner: %s" % ", ".join(done))
 
 
-@op("detachStem")
 def op_detach_stem(ctx, font, spec, source_half):
     """가로획에 매달린 짧은 세로획을 떼어 그 사이에 틈을 둔다.
 
-        {"op": "detachStem", "at": [0.45, 0.58, 0.95, 0.70],
+        {"op": "detachBar", "axis": "v", "at": [0.45, 0.58, 0.95, 0.70],
          "like": "uni9E97.jp83", "likeAt": [0.2, 0.55, 0.35, 0.70], "cps": ["9a6a"]}
                                     驪 — 丽 두 冂 의 가운데 세로획 (麗.jp83 처럼)
 
@@ -1329,11 +1201,6 @@ def op_detach_stem(ctx, font, spec, source_half):
 
     `end`     `"bottom"` 이면 가로획 **위에 선** 세로획의 아래끝을 뗀다 (嶼 — 與 의
               가운데 세로획). 기본은 위끝.
-    `corner`  두 가로획 사이 세로획 (네모의 한 변) 을 아래 가로획에서 뗀다 — 값은 안쪽
-              흰 칸이 있는 쪽 (`"right"`, 凞 의 巳 위 네모 왼쪽 세로획). 위 가로획에
-              매달린 꼬다리만 남고 아래끝은 아래 가로획 윗변에서 `gap` 떨어진다.
-              `slant` (亏 의 사선 기울기, 0.24) 를 주면 꼬다리가 아래로 갈수록 바깥쪽으로
-              기운다 (위끝은 그대로).
 
     세로획 두 변 사이, 가로획 아랫변에서 틈만큼 아래까지를 도려낸다 — 네모는 먹
     안에만 든다.
@@ -1348,7 +1215,7 @@ def op_detach_stem(ctx, font, spec, source_half):
         stems = [O.box(c) for c in dcs
                  if lx0 <= O.box(c)[0] and O.box(c)[1] <= lx1 and ly0 <= O.box(c)[2] and O.box(c)[3] <= ly1]
         if not stems:
-            print("detachStem: %s 에서 홀로 선 세로획을 못 찾았다" % spec["like"])
+            print("detachBar v: %s 에서 홀로 선 세로획을 못 찾았다" % spec["like"])
             return
         sx0, sx1, sy0, sy1 = stems[0]
         above = [p.y for c in dcs if c is not None for p in c if p.on_curve and p.y > sy1 + 0.5
@@ -1368,53 +1235,6 @@ def op_detach_stem(ctx, font, spec, source_half):
             while 0 < y + sg < 1000 and not mask[1000 - (y + sg), x]:
                 y += sg
             return y
-        if spec.get("corner"):
-            # 가로획 끝과 ㄱ 자로 만나는 모서리 (凞 의 巳 위 네모 왼쪽) — 한쪽만 안쪽 흰
-            # 칸이다. 안쪽 흰 칸으로 가로획 아랫변을 찾고, 그 아래 틈만큼 세로획을
-            # 잘라 낸다 (남길 것을 덮어 — keepOnly 와 같이). 가로획은 모서리까지 남는다.
-            inner = spec["corner"]                  # 안쪽 흰 칸이 있는 쪽: "right" | "left"
-            W = (glyph.width or 1000) + 100
-
-            def carve(cs_, a_, b_, lo_, hi_):
-                # 네모 (a_..b_, lo_..hi_) 와 겹치는 윤곽만 자른다 — 다른 획 (凞 의 冫 점)
-                # 까지 잘랐다 붙이면 겹침 계산이 깨진다
-                hit = [c for c in cs_ if O.box(c)[0] < b_ and O.box(c)[1] > a_
-                       and O.box(c)[2] < hi_ and O.box(c)[3] > lo_]
-                keep_ = [c for c in cs_ if c not in hit]
-                return keep_ + clip_to(hit, [(-100, W, -400, lo_), (-100, W, hi_, 1400),
-                                             (-100, a_, lo_, hi_), (b_, W, lo_, hi_)])
-            for a, b in stems:
-                xi = b + 3 if inner == "right" else a - 3
-                # 안쪽 흰 칸을 위로 → 위 가로획 아랫변, 아래로 → 아래 가로획 윗변
-                y = ym
-                while y < 999 and not mask[1000 - (y + 1), int(xi)]:
-                    y += 1
-                bb = O.snap_y(cs, y + 0.5)
-                y = ym
-                while y > 1 and not mask[1000 - (y - 1), int(xi)]:
-                    y -= 1
-                mt = O.snap_y(cs, y - 0.5)
-                a, b = O.snap_x(cs, a), O.snap_x(cs, b)
-                # 위 네모의 왼 세로획을 통째로 떼어 내고, 위 가로획에 매달린 꼬다리를
-                # 다시 그린다 — 아래끝은 아래 가로획에서 `gap` 떨어지고, 亏 처럼 아래로
-                # 갈수록 바깥쪽으로 `slant` 만큼 기운다.
-                cs = carve(cs, a, b, mt, bb)
-                k = spec.get("slant", 0)
-                d = -k if inner == "right" else k
-                y0, y1 = mt + gap, bb + 12
-                c = fontforge.contour()
-                c.is_quadratic = cs[0].is_quadratic
-                for px, py in ((a, y1), (b, y1), (b, y0), (a, y0)):
-                    c += fontforge.point(px + d * (bb - min(py, bb)), py, True)
-                c.closed = True
-                if not c.isClockwise():
-                    c.reverseDirection()
-                cs = cs + [c]
-                cut.append("%d..%d 꼬다리 y%d..%d 기울기 %.2f" % (a, b, y0, bb, k))
-            if cut:
-                relay(glyph, [cs])
-                done.append("%s %s" % (glyph.glyphname, ", ".join(cut)))
-            continue
         for a, b in stems:
             # 양옆 흰 칸을 위로 따라가 처음 먹을 만나는 자리 = 가로획 아랫변. 두 쪽이
             # 같은 가로획에 닿아야 매달린 세로획이다 — 冂 의 다리는 한쪽이 바깥이다.
@@ -1437,7 +1257,7 @@ def op_detach_stem(ctx, font, spec, source_half):
                     hit = (ci, pts, ia[0], ib[0])
                     break
             if hit is None:
-                print("detachStem: %s %d..%d 의 모서리를 못 찾았다" % (glyph.glyphname, a, b))
+                print("detachBar v: %s %d..%d 의 모서리를 못 찾았다" % (glyph.glyphname, a, b))
                 continue
             ci, pts, ia, ib = hit
             n = len(pts)
@@ -1467,7 +1287,7 @@ def op_detach_stem(ctx, font, spec, source_half):
         kept, _ = O.tidy(cs)
         relay(glyph, [kept], merge=False)
     for d in done:
-        print("detachStem:", d)
+        print("detachBar v:", d)
 
 
 @op("detachBar")
@@ -1486,7 +1306,16 @@ def op_detach_bar(ctx, font, spec, source_half):
     (x, 아랫변) 을 찾아, 두 윤곽을 그 자리에서 이어 한 속공간으로 만든다. 가로획
     끝면은 세로획 안변에서 `gap` 만큼 물러난 곧은 선이다. 네모로 오리지 않으니
     먹 밖을 건드릴 일이 없다.
+
+    합친 op (옵션을 보고 예전 구현으로 넘긴다):
+      `foot` 참이면 네모 아랫변을 卩 발처럼 연다 (예전 openFoot — 凞 夔)
+      `axis` "v" 면 가로획에 매달린 세로획을 뗀다 (예전 detachStem — 驪 嶼)
     """
+    if spec.get("foot"):
+        return op_open_foot(ctx, font, spec, source_half)
+    if spec.get("axis") == "v":
+        return op_detach_stem(ctx, font, spec, source_half)
+
     left = spec.get("side", "right") == "left"
     gap = spec["gap"]
     done = []
@@ -2181,7 +2010,16 @@ def op_swap_counters(ctx, font, spec, source_half):
             기증자 것을 고른 것들의 상자에서 이 글자 상자로 옮겨 이 글자 것 자리에 넣는다.
             가로는 상자 폭에 맞추고, 세로는 점 굵기를 지키게 _dot_keeping_y 로.
             칸 벽은 상자의 끝이라 제 벽에 그대로 닿는다.
+
+    합친 op (옵션을 보고 예전 구현으로 넘긴다):
+      `dots` "drop" 이면 칸 속 점을 목에서 갈라 지운다 (예전 dropPart — 癒)
+      `dots` "place" 면 빈 칸에 점을 다른 글자 몫대로 놓는다 (예전 placeDots — 癒)
     """
+    if spec.get("dots") == "drop":
+        return op_drop_part(ctx, font, spec, source_half)
+    if spec.get("dots") == "place":
+        return op_place_dots(ctx, font, spec, source_half)
+
     from .ops import _PRISTINE, _open_pristine
     donor_font = None
     if "from" in spec:
@@ -2416,7 +2254,13 @@ def op_straighten_stroke(ctx, font, spec, source_half):
     비율을 적어 달리 잡을 수 있다.
 
     먹을 더하지 않으므로 `removeOverlap` 을 부르지 않는다.
+
+    합친 op (옵션을 보고 예전 구현으로 넘긴다):
+      `slant` 참이면 굽은 사선을 펴서 위 획에 붙인다 (예전 straightenSlant — 廐)
     """
+    if spec.get("slant"):
+        return op_straighten_slant(ctx, font, spec, source_half)
+
     done = []
     for glyph in selected_glyphs(font, spec):
         cs = list(glyph.foreground)
@@ -2474,7 +2318,6 @@ def op_straighten_stroke(ctx, font, spec, source_half):
         print("straightenStroke: %s" % "; ".join(done))
 
 
-@op("straightenSlant")
 def op_straighten_slant(ctx, font, spec, source_half):
     """살짝 굽은 사선을 곧은 사선으로 펴고, 끝을 위 획에 붙인다.
 
@@ -2483,7 +2326,7 @@ def op_straighten_slant(ctx, font, spec, source_half):
     없앤다 — 두 변을 각각 아래 이음점과 끝점을 잇는 직선으로 보고, 조절점을 지운
     뒤 끝점을 그 직선을 따라 위 먹까지 올려 `over` (기본 12) 만큼 파고들게 한다.
 
-        {"op": "straightenSlant", "at": [0.603, 0.30, 0.73, 0.60], "upright": true,
+        {"op": "straightenStroke", "slant": true, "at": [0.603, 0.30, 0.73, 0.60], "upright": true,
          "cps": ["5ed0"]}
 
     `upright` 를 주면 기울기도 없애 세로로 세운다 — 두 변의 x 는 위 끝점의 것
@@ -2515,7 +2358,7 @@ def op_straighten_slant(ctx, font, spec, source_half):
         n = len(pts)
         ons = sorted((k for k in pick if pts[k].on_curve), key=lambda k: -pts[k].y)
         if len(ons) < 2:
-            print("straightenSlant: %s 에서 획을 못 찾았다" % glyph.glyphname)
+            print("straightenStroke slant: %s 에서 획을 못 찾았다" % glyph.glyphname)
             continue
         tops = ons[:2]
         mask = O.part_mask(cs)
@@ -2565,7 +2408,7 @@ def op_straighten_slant(ctx, font, spec, source_half):
         done.append("%s 끝 %s → y %d" % (glyph.glyphname,
                     ["%d" % round(move[t][0]) for t in tops], goal))
     if done:
-        print("straightenSlant: %s" % "; ".join(done))
+        print("straightenStroke slant: %s" % "; ".join(done))
 
 
 def _col_runs(mask, x):
@@ -2613,7 +2456,6 @@ def _roof_frame(mask, x, at):
     return box, roof, dot
 
 
-@op("roofBar")
 def op_roof_bar(ctx, font, spec, source_half):
     """食 머리의 丶 을 지우고 人 아래 一 을 그린다 — 다른 소스 食 의 몫을 배워.
 
@@ -2624,7 +2466,7 @@ def op_roof_bar(ctx, font, spec, source_half):
     그리고, 양끝은 一 윗변 높이 (다리가 기울어 가장 좁은 줄) 의 人 다리 안변에서
     같은 틈만큼 띄운다.
 
-        {"op": "roofBar", "from": "IBM-Plex-Sans-TC/IBMPlexSansTC-{cjkSrc}.ttf",
+        {"op": "dotToBar", "roof": true, "from": "IBM-Plex-Sans-TC/IBMPlexSansTC-{cjkSrc}.ttf",
          "fromCp": "98df", "fromAt": [0.30, 0.56, 0.70, 0.78],
          "at": [0.40, 0.42, 0.60, 0.555], "x": 0.5, "cps": ["7bd2"]}
 
@@ -2729,7 +2571,7 @@ def op_roof_bar(ctx, font, spec, source_half):
     for glyph in selected_glyphs(font, spec):
         got = plan(glyph, ctx.style["name"] in spec.get("overlap", []), share)
         if got is None:
-            print("roofBar: %s 상자 윗변이나 丶 을 못 찾았다" % glyph.glyphname)
+            print("dotToBar roof: %s 상자 윗변이나 丶 을 못 찾았다" % glyph.glyphname)
             continue
         keep, (ax0, ax1, ay0, ay1), cy, t, left, right = got
         if floor and right - left < floor:
@@ -2739,9 +2581,9 @@ def op_roof_bar(ctx, font, spec, source_half):
         relay(glyph, [keep, [piece]])
         done.append("%s 丶 (%d..%d, %d..%d) 지움 · 一 y%d t%d x%d-%d (너비 %d)" % (
             glyph.glyphname, ax0, ax1, ay0, ay1, round(cy), t, left, right, right - left))
-    print("roofBar: 몫 %.3f 틈 %d" % (share, gap))
+    print("dotToBar roof: 몫 %.3f 틈 %d" % (share, gap))
     if done:
-        print("roofBar: %s" % "; ".join(done))
+        print("dotToBar roof: %s" % "; ".join(done))
 
 
 @op("placeStem")
@@ -2750,18 +2592,17 @@ def op_place_stem(ctx, font, spec, source_half):
 
     姬 의 방을 巸 의 𦣝 으로 바꾸고 잘라 벌리면 (swapSide fit="cut") 칼선이 안쪽
     세로획 왼쪽을 지나 획이 오른쪽으로 밀린다. 세로획을 기증자에서 바로 왼쪽 먹
-    (𦣝 의 왼쪽 세로획) 의 왼끝에서 떨어진 거리에 `dx` 를 더해 놓고, 위아래 끝은
+    (𦣝 의 왼쪽 세로획) 의 왼끝에서 떨어진 거리에 놓고, 위아래 끝은
     오른쪽 口 의 바깥 높이에 맞춘다 — 세로획 오른쪽으로 가며 처음 만나는, 위아래
     가로획에 닿지 않는 긴 세로 토막 (口 의 오른 벽) 의 두 끝. 굵은 쪽은 口 의 벽이
     바깥 가로획과 붙어 벽 두께를 따로 잴 수 없어 이렇게 잰다.
 
         {"op": "placeStem", "at": [0.55, 0.15, 0.75, 0.65],
-         "like": "5df8", "likeAt": [0.15, 0.15, 0.32, 0.65], "dx": 26, "cps": ["59ec"]}
+         "like": "5df8", "likeAt": [0.15, 0.15, 0.32, 0.65], "center": true, "cps": ["59ec"]}
 
     `at`/`likeAt` 세로획 윤곽을 고르는 네모 (온전히 드는 윤곽).
-    `dx`       기증자 안의 자리에서 더 옮길 몫 (모든 굵기에 같게 — Regular 획 폭의 절반).
     `center`   참이면 x 를 왼쪽 세로획 오른변과 오른쪽 먹 (口 벽의 왼끝) 사이 긴 흰
-               칸의 가운데로 — `like`·`dx` 는 쓰지 않는다.
+               칸의 가운데로 — `like` 의 자리는 쓰지 않는다.
     """
     def inside(g, box):
         x0, y0, x1, y1 = _in_box(ctx, g, box)
@@ -2780,7 +2621,7 @@ def op_place_stem(ctx, font, spec, source_half):
     if len(lk) != 1:
         print("placeStem: %s 에서 세로획 %d 개 — 건너뜀" % (like.glyphname, len(lk)))
         return
-    off = O.box(like.foreground[lk[0]])[0] - frame_left(like, lk[0]) + spec.get("dx", 0)
+    off = O.box(like.foreground[lk[0]])[0] - frame_left(like, lk[0])
     done = []
     for glyph in selected_glyphs(font, spec):
         k = inside(glyph, spec["at"])
@@ -2819,7 +2660,6 @@ def op_place_stem(ctx, font, spec, source_half):
         print("placeStem: %s" % "; ".join(done))
 
 
-@op("dotsToStems")
 def op_dots_to_stems(ctx, font, spec, source_half):
     """띠 안의 점들을 지우고, 점마다 그 가운데 x 에 위아래 획을 잇는 곧은 세로획을 긋는다.
 
@@ -2831,7 +2671,7 @@ def op_dots_to_stems(ctx, font, spec, source_half):
     가로획·口 와 한 윤곽인 굵기에서 남은 점이 엉뚱하게 이어진다).
     새 세로획은 굵기 = 띠 위 口 의 가장 가까운 세로벽 폭, 양끝은 `over` (12) 파고듦.
 
-        {"op": "dotsToStems", "at": [0, 0.30, 1, 0.352], "single": true, "cps": ["56cd"]}
+        {"op": "dotToBar", "stems": true, "at": [0, 0.30, 1, 0.352], "single": true, "cps": ["56cd"]}
 
     `single` 이면 두 점마다 그 한가운데에 세로획 하나 — 가로획을 가로질러 위 口
     아랫변과 아래 口 윗변을 잇는다 (편수자료의 囍). `centerBar` 면 가로획을 두 口
@@ -2856,7 +2696,7 @@ def op_dots_to_stems(ctx, font, spec, source_half):
                 else:
                     dots.append([a, b, y, y])
         if not dots:
-            print("dotsToStems: %s 점을 못 찾았다" % glyph.glyphname)
+            print("dotToBar stems: %s 점을 못 찾았다" % glyph.glyphname)
             continue
         # 점마다 위 (口 아랫변) 와 아래 (가로획 윗변) — 굵으면 점 자리 세로줄은 가로획·
         # 점·口 를 한 토막으로 지나므로, 가장 가까운 이웃 점과의 사이 세로줄에서 잰다
@@ -2872,7 +2712,7 @@ def op_dots_to_stems(ctx, font, spec, source_half):
             above = min((lo for lo, hi in runs if lo > y1), default=None)
             ends.append((cx, below, above, d))
         if any(lo is None or hi is None for _, lo, hi, _ in ends):
-            print("dotsToStems: %s 위아래를 못 찾았다" % glyph.glyphname)
+            print("dotToBar stems: %s 위아래를 못 찾았다" % glyph.glyphname)
             continue
         # 가로획 윗변과 口 아랫변 사이 띠에는 점뿐이다 — 띠를 네모로 통째로 도려낸다.
         # 윤곽 점을 지우면 가로획·口 와 한 윤곽인 굵기에서 남은 점이 엉뚱하게 잇는다.
@@ -2939,7 +2779,7 @@ def op_dots_to_stems(ctx, font, spec, source_half):
                     wall = min(row, key=lambda t: abs((t[0] + t[1]) / 2 - cx))
                     break
             if lo is None or hi is None or wall is None:
-                print("dotsToStems: %s x%d 위아래를 못 찾았다" % (glyph.glyphname, cx))
+                print("dotToBar stems: %s x%d 위아래를 못 찾았다" % (glyph.glyphname, cx))
                 continue
             w = wall[1] - wall[0]
             new.append(_rect_contour(keep, round(cx - w / 2), round(cx + w / 2),
@@ -2948,96 +2788,9 @@ def op_dots_to_stems(ctx, font, spec, source_half):
         done.append("%s 점 %d → %s" % (glyph.glyphname, len(dots),
                     " ".join("x%d" % e[0] for e in ends)))
     if done:
-        print("dotsToStems: %s" % "; ".join(done))
+        print("dotToBar stems: %s" % "; ".join(done))
 
 
-@op("apexFlag")
-def op_apex_flag(ctx, font, spec, source_half):
-    """人 꼭대기에서 왼쪽으로 가로선을 단다 — 편수자료의 兪 머리 (入 처럼 꺾인 꼭대기).
-
-    선의 윗변은 人 꼭대기 윗변, 굵기와 왼끝은 그 아래 一 의 것. 굵은 굵기에서는 一 이
-    人 다리와 붙어 따로 고를 수 없으므로 꼭대기 아래 흰 세모 (구멍) 의 왼끝과, 그
-    아래 세로줄에서 잰 一 의 두께를 쓴다.
-
-        {"op": "apexFlag", "at": [0.45, 0.45, 0.80, 0.72], "cps": ["7652"]}
-
-    `at` 人 (꼭대기·一·흰 세모) 이 드는 네모. 꼭대기는 그 안 가장 높은 먹.
-    `like` 를 주면 길이를 그 글자 (愈) 의 꼭대기 선처럼 — 선 길이가 人 지붕 폭의 몇
-         몫인지 (Regular 0.401) 재어 같은 몫으로 (JP 愈·兪·喩 는 꼭대기 선이 이미 있다).
-    `gap` 을 주면 왼끝을 그 높이에서 왼쪽으로 처음 만나는 먹 바로 앞 `gap` 까지 늘린다
-         (廐 의 旡 가로획과 같이 26 — Regular 획 굵기의 절반).
-    """
-    done = []
-    for glyph in selected_glyphs(font, spec):
-        cs = list(glyph.foreground)
-        x0, y0, x1, y1 = _in_box(ctx, glyph, spec["at"])
-        mask = O.part_mask(cs)
-        # 꼭대기 — 네모 안 가장 높은 먹 줄
-        top = None
-        for y in range(int(y1), int(y0), -1):
-            r = [t for t in O.runs(mask[1000 - y]) if t[0] >= x0 and t[1] <= x1]
-            if r:
-                top, ax = y, (r[0][0] + r[0][1]) / 2
-                break
-        if top is None:
-            print("apexFlag: %s 꼭대기를 못 찾았다" % glyph.glyphname)
-            continue
-        inside = [c for c in cs if x0 <= O.box(c)[0] and O.box(c)[1] <= x1
-                  and y0 <= O.box(c)[2] and O.box(c)[3] <= top - 5]
-        bars = [c for c in inside if c.isClockwise() and O.box(c)[1] - O.box(c)[0] > 150]
-        holes = [c for c in inside if not c.isClockwise()]
-        if bars:
-            b = O.box(bars[0])
-            left, t = b[0], b[3] - b[2]
-        elif holes:
-            h = O.box(holes[0])
-            left = h[0]
-            under = [r for r in _col_runs(mask, ax) if r[1] <= h[2] + 1]
-            if not under:
-                print("apexFlag: %s 一 을 못 쟀다" % glyph.glyphname)
-                continue
-            t = max(under, key=lambda r: r[1])
-            t = t[1] - t[0]
-        else:
-            print("apexFlag: %s 一 을 못 찾았다" % glyph.glyphname)
-            continue
-        if "like" in spec:
-            # 같은 글꼴 愈 의 人 꼭대기 선 — 선 길이가 人 지붕 폭의 몇 몫인가. 같은 몫으로
-            # 이 글자 지붕 폭에 맞춰 꼭대기에서 왼쪽으로 긋는다.
-            lg = donor_glyph(font, spec, "like")
-            lcs = list(lg.foreground)
-            roof_l = max(lcs, key=lambda c: (O.box(c)[3], O.box(c)[1] - O.box(c)[0]))
-            rb = O.box(roof_l)
-            row = O.runs(O.part_mask([roof_l])[1000 - int(rb[3] - 6)])
-            share = (max(b for a, b in row) - min(a for a, b in row)) / (rb[1] - rb[0])
-            mine = max((c for c in cs if O.box(c)[0] <= ax <= O.box(c)[1]
-                        and O.box(c)[2] <= top <= O.box(c)[3] + 1 and O.box(c)[3] < top + 60),
-                       key=lambda c: O.box(c)[1] - O.box(c)[0])
-            mb = O.box(mine)
-            left = ax - share * (mb[1] - mb[0])
-        if "gap" in spec:
-            # 廐 의 旡 가로획처럼 — 그 높이에서 왼쪽으로 처음 만나는 먹 바로 앞 `gap` 까지
-            ends = []
-            for y in range(int(top - t), int(top) + 1):
-                ends += [b for a, b in O.runs(mask[1000 - y]) if b < left]
-            if ends:
-                left = max(ends) + spec["gap"]
-        # 오른끝 — 선 아랫변 줄에서 人 안쪽 흰 칸이 시작하는 자리 (왼 다리 안변) 까지만.
-        # 꼭대기 가운데까지 그으면 아래쪽이 人 안으로 삐져나온다.
-        right = ax
-        for y in range(int(top - t), int(top) + 1):
-            row = O.runs(mask[1000 - y])
-            lefts = [b for a, b in row if a <= ax <= b]
-            if not lefts:                       # 이 줄은 꼭대기 아래 흰 칸을 지난다
-                right = min(right, max((b for a, b in row if b < ax), default=right))
-        piece = _rect_contour(cs, round(left), round(right), top - t, top, -1)
-        relay(glyph, [cs, [piece]])
-        done.append("%s 꼭대기 (%d,%d) %d..%d 굵기 %d" % (glyph.glyphname, ax, top, left, right, t))
-    if done:
-        print("apexFlag: %s" % "; ".join(done))
-
-
-@op("placeDots")
 def op_place_dots(ctx, font, spec, source_half):
     """빈 月 안에 다른 글자 (愈) 의 점 둘을 그 몫대로 놓는다 — 흰 칸 가운데에.
 
@@ -3047,7 +2800,7 @@ def op_place_dots(ctx, font, spec, source_half):
     — 가로세로 같은 비율로 줄여 그 자리에 들어갈 만큼만 (굵은 굵기에서 점을 획 굵기로
     키우면 칸을 메운다).
 
-        {"op": "placeDots", "at": [0.30, 0.14, 0.66, 0.48], "like": "6108",
+        {"op": "swapCounters", "dots": "place", "at": [0.30, 0.14, 0.66, 0.48], "like": "6108",
          "likeAt": [0.10, 0.17, 0.52, 0.57], "cps": ["7652"]}
 
     `at`/`likeAt` 月 이 드는 네모. 기증자에서는 그 안 흰 칸에 온전히 드는 윤곽이 점이다.
@@ -3080,7 +2833,7 @@ def op_place_dots(ctx, font, spec, source_half):
         got = isolate_part(ctx, like, spec.get("likeGuide", like.unicode), spec["dotsAt"],
                            spec["split"], em)
         if not got:
-            print("placeDots: %s 에서 점을 못 갈랐다" % like.glyphname)
+            print("swapCounters place: %s 에서 점을 못 갈랐다" % like.glyphname)
             return
         dots, rest_ = [c.dup() for c in got[0]], [c.dup() for c in got[1]]
         lin = inner(O.part_mask(rest_), lbox)
@@ -3093,10 +2846,10 @@ def op_place_dots(ctx, font, spec, source_half):
         dots = [c for c in cand if lin and lin[0] < O.box(c)[0] and O.box(c)[1] < lin[1]
                 and lin[2] < O.box(c)[2] and O.box(c)[3] < lin[3]]
     if lin is None:
-        print("placeDots: %s 月 흰 칸을 못 쟀다" % like.glyphname)
+        print("swapCounters place: %s 月 흰 칸을 못 쟀다" % like.glyphname)
         return
     if not dots:
-        print("placeDots: %s 에서 점을 못 찾았다" % like.glyphname)
+        print("swapCounters place: %s 에서 점을 못 찾았다" % like.glyphname)
         return
     db = O.bbox(dots)
     LW, LH = lin[1] - lin[0], lin[3] - lin[2]
@@ -3111,7 +2864,7 @@ def op_place_dots(ctx, font, spec, source_half):
         cs = list(glyph.foreground)
         gin = inner(O.part_mask(cs), _in_box(ctx, glyph, spec["at"]))
         if gin is None:
-            print("placeDots: %s 月 흰 칸을 못 쟀다" % glyph.glyphname)
+            print("swapCounters place: %s 月 흰 칸을 못 쟀다" % glyph.glyphname)
             continue
         GW, GH = gin[1] - gin[0], gin[3] - gin[2]
         tx0, tx1 = gin[0] + fr[0] * GW, gin[0] + fr[1] * GW
@@ -3147,10 +2900,9 @@ def op_place_dots(ctx, font, spec, source_half):
         relay(glyph, [cs, out])
         done.append("%s 점 %d..%d · %d..%d (×%.2f×%.2f)" % (glyph.glyphname, tx0, tx1, ty0, ty1, sx, sy))
     if done:
-        print("placeDots: %s" % "; ".join(done))
+        print("swapCounters place: %s" % "; ".join(done))
 
 
-@op("dropPart")
 def op_drop_part(ctx, font, spec, source_half):
     """네모로 고른 성분을 지운다 — 붙은 굵기는 가는 굵기를 안내로 목에서 갈라.
 
@@ -3159,7 +2911,7 @@ def op_drop_part(ctx, font, spec, source_half):
     뿐이고, 떨어진 굵기는 그 윤곽을 지우며, 붙은 굵기는 `ops.isolate_part` 가 같은
     글리프의 가는 굵기를 안내로 목에서 가른 뒤 그 조각을 버린다.
 
-        {"op": "dropPart", "at": [[0.37, 0.19, 0.56, 0.41]],
+        {"op": "swapCounters", "dots": "drop", "at": [[0.37, 0.19, 0.56, 0.41]],
          "split": "IBM-Plex-Sans-JP/IBMPlexSansJP-{cjkSrc}.ttf",
          "guideAs": "uni7652.jp78", "cps": ["7652"]}
     """
@@ -3170,16 +2922,15 @@ def op_drop_part(ctx, font, spec, source_half):
         guide = spec.get("guideAs", glyph.unicode)
         got = isolate_part(ctx, glyph, guide, spec["at"], spec["split"], em)
         if not got:
-            print("dropPart: %s 에서 성분을 못 골랐다" % glyph.glyphname)
+            print("swapCounters drop: %s 에서 성분을 못 골랐다" % glyph.glyphname)
             continue
         part, rest = got[0], got[1]
         relay(glyph, [[c.dup() for c in rest]])
         done.append("%s 조각 %d 윤곽 지움" % (glyph.glyphname, len(part)))
     if done:
-        print("dropPart: %s" % "; ".join(done))
+        print("swapCounters drop: %s" % "; ".join(done))
 
 
-@op("openFoot")
 def op_open_foot(ctx, font, spec, source_half):
     """네모의 아랫변을 왼 기둥에서 떼어 卩 의 발처럼 연다.
 
@@ -3188,7 +2939,7 @@ def op_open_foot(ctx, font, spec, source_half):
     잰다: 발 끝과 기둥 사이 틈이 안쪽 폭 (기둥 오른변 ~ 오른 세로획 안변) 의 몇 몫인지,
     발 끝이 아래로 갈수록 오른쪽으로 비스듬히 잘린 몫 (발 두께 대비).
 
-        {"op": "openFoot", "at": [0.60, 0.45, 0.95, 0.80], "like": "7664",
+        {"op": "detachBar", "foot": true, "at": [0.60, 0.45, 0.95, 0.80], "like": "7664",
          "likeAt": [0.64, -0.08, 0.95, 0.45], "cps": ["51de"]}
 
     `at`/`likeAt` 네모 (기둥·발·오른 세로획) 가 드는 자리. 발은 그 안에서 기둥 오른쪽
@@ -3228,7 +2979,7 @@ def op_open_foot(ctx, font, spec, source_half):
     lm = O.part_mask(list(like.foreground))
     got = measure(lm, _in_box(ctx, like, spec["likeAt"]))
     if not got:
-        print("openFoot: %s 에서 卩 를 못 쟀다" % like.glyphname)
+        print("detachBar foot: %s 에서 卩 를 못 쟀다" % like.glyphname)
         return
     sr, ri, flo, fhi, foot = got
     def foot_left(rs):
@@ -3243,7 +2994,7 @@ def op_open_foot(ctx, font, spec, source_half):
         m = O.part_mask(cs)
         g = measure(m, _in_box(ctx, glyph, spec["at"]))
         if not g:
-            print("openFoot: %s 네모를 못 쟀다" % glyph.glyphname)
+            print("detachBar foot: %s 네모를 못 쟀다" % glyph.glyphname)
             continue
         gsr, gri, lo, hi, _ = g
         fx = gsr + share * (gri - gsr)
@@ -3272,7 +3023,7 @@ def op_open_foot(ctx, font, spec, source_half):
         done.append("%s 발 %d..%d (틈 몫 %.2f) y%d..%d 비스듬 %d" % (
             glyph.glyphname, fx, gri, share, lo, hi, round(dx)))
     if done:
-        print("openFoot: %s" % "; ".join(done))
+        print("detachBar foot: %s" % "; ".join(done))
 
 
 @op("graftNarrow")
@@ -3303,11 +3054,6 @@ def op_graft_narrow(ctx, font, spec, source_half):
               changeWeight 로 굵혀 되돌린다.
     `knifeShare` 좁힐 성분 왼끝에서 이 몫 안에서만 칼선을 찾는다 (月 은 0.5 — 오른
               세로획 아래 갈고리가 왼쪽으로 꺾여 들어와 그 자리를 자르면 끊긴다).
-    `knifeAt` [몫, 몫] — 칼선을 그 구간에서만 찾는다 (癒.jp78 의 月 은 점 둘이 왼 기둥에
-              붙어 오른쪽, 오른 기둥 바로 안에서 자른다: 0.72–0.80).
-    `forceKnife` 몫 또는 `"stem"` — 가로변만 지나는 칼선이 없으면 그 자리에서 그대로
-              자른다 (칼선 오른쪽 점만 옮긴다; 곡선이 그만큼 줄어든다). `"stem"` 은 오른
-              다리 안변 바로 왼쪽 — 다리를 통째로 옮겨 굵기를 지킨다.
     `tall`    칼선이 지나도 되는 가로획 두께 한도 (성분 높이 대비, 기본 0.15) — 굵은
               굵기의 月 은 윗 가로획이 이보다 두껍다.
     """
@@ -3437,29 +3183,8 @@ def op_graft_narrow(ctx, font, spec, source_half):
         # 칼선은 왼쪽 몫 안에서만 — 月 오른 세로획 아래 갈고리가 왼쪽으로 꺾여 들어온다
         lo_x = nb[0]
         hi_x = nb[0] + spec.get("knifeShare", 1.0) * (nb[1] - nb[0])
-        if "knifeAt" in spec:                   # 칼선을 찾을 몫 구간 (점 둘 오른쪽 등)
-            lo_x = nb[0] + spec["knifeAt"][0] * (nb[1] - nb[0])
-            hi_x = nb[0] + spec["knifeAt"][1] * (nb[1] - nb[0])
         narrowed, knife = O.narrow_across(ncs, delta, lo_x, hi_x,
                                           tall=spec.get("tall", 0.15))
-        if narrowed is None and "forceKnife" in spec:
-            # 가로변만 지나는 칼선이 없을 때 (SemiBold·Bold 癒.jp78 — 갈고리 윗변이 곡선)
-            # 그 몫 자리에서 그대로 자른다 — 칼선 오른쪽 점만 옮겨 갈고리 곡선이 그만큼 준다
-            if spec["forceKnife"] == "stem":
-                # 오른 다리 안변 바로 왼쪽 — 비율로 잡으면 다리 안을 지나 다리가 얇아진다
-                # (Bold 癒.jp78: 0.74 → 552 가 다리 549..638 안)
-                mm = O.part_mask(ncs)
-                row = O.runs(mm[1000 - int((nb[2] + nb[3]) / 2)])
-                knife = max(a for a, b in row) - 2
-            else:
-                knife = nb[0] + spec["forceKnife"] * (nb[1] - nb[0])
-            narrowed = []
-            for c in ncs:
-                c = c.dup()
-                for p in c:
-                    if p.x > knife:
-                        p.x += delta
-                narrowed.append(c)
         if narrowed is None:
             print("graftNarrow: %s 좁힐 칼선이 없다" % glyph.glyphname)
             continue
@@ -4079,7 +3804,16 @@ def op_dot_to_bar(ctx, font, spec, source_half):
              글자 (勺 는 제 것 "52fa"). 芍 는 丿 머리가 艹 에 묻혀 勺 의 몫을 빌린다:
              몫 = (가운데 − 갈고리) / (勹 윗 가로획 아랫변 − 갈고리).
     `share`  그 몫을 숫자로 바로 준다 (모든 굵기에 같게).
+
+    합친 op (옵션을 보고 예전 구현으로 넘긴다):
+      `roof` 참이면 食 머리처럼 지붕(人) 아래 丶 을 一 로 (예전 roofBar — 篒)
+      `stems` 참이면 띠 안 점들을 세로획으로 (예전 dotsToStems — 囍)
     """
+    if spec.get("roof"):
+        return op_roof_bar(ctx, font, spec, source_half)
+    if spec.get("stems"):
+        return op_dots_to_stems(ctx, font, spec, source_half)
+
     # 몫은 고치기 전에 잰다 — 勺 를 먼저 고치면 芍 차례엔 勺 에 점이 없다
     share = spec.get("share")
     if share is None and "head" in spec:
@@ -4165,118 +3899,6 @@ def op_keep_only(ctx, font, spec, source_half):
         done.append("%s 윤곽 %d → %d" % (glyph.glyphname, len(cs), len(glyph.foreground)))
     if done:
         print("keepOnly: %s" % ", ".join(done))
-
-
-def _lone_left(glyph, share=0.47):
-    """왼쪽에 홀로 떨어진 윤곽 하나 — 변이 방과 아직 안 붙었으면 그것이 나온다."""
-    cs = list(glyph.foreground)
-    got = [c for c in cs if O.box(c)[1] < (glyph.width or 1000) * share]
-    return got if len(got) == 1 else None
-
-
-def _forms(font, spec, cps):
-    """그 굵기에서 쓸 **기준 자형**들 — 변이 아직 홀로 떨어진 글자에서 거둔다.
-
-    굵을수록 변이 방에 녹아붙지만, 열두 자가 한꺼번에 붙지는 않는다. Bold 에서도
-    祝·祉·祐 의 礻 는 홀로 떨어져 있다. 그 굵기의 것을 써야 획 두께가 맞는다.
-    """
-    out = {}
-    for c in spec.get("form") or cps:
-        cpv = cp(c) if isinstance(c, str) else c
-        if cpv not in font:
-            continue
-        got = _lone_left(font[cpv])
-        if got:
-            out[cpv] = got
-    return out
-
-
-@op("swapRadical")
-def op_swap_radical(ctx, font, spec, source_half):
-    """변을 통째로 바꾼다 — **기준 자형**으로 가르고, 온전한 변을 끼운다.
-
-    2026-09-29 사용자가 정해 준 길이다. 어제까지는 변이 방에 녹아붙은 굵기를
-    손대지 못해 겹친 채로 두었고, 상자나 흰 골로 어림해 자르려다 방의 끝을
-    잘라먹었다. 기준 자형이 있으면 어림할 것이 없다.
-
-      1. **기준 자형**을 거둔다 — 같은 굵기에서 변이 아직 홀로 떨어진 글자의 것
-         (`form` 에 따로 적을 수 있다. 없으면 `cps` 에서 찾는다).
-      2. 받는 글자에 기준 자형을 가로로 밀어 맞춰 보고, 가장 잘 덮는 것을 골라
-         그 오른끝을 **가름선**으로 삼는다 (`outline.beside_form`).
-      3. 그 선에서 가른다. 선이 지나는 자리에 점을 만들어 끊으므로 방의 끝이
-         잘려 나가지 않고, 잘린 자리는 두 옆 변을 늘여 모서리로 되살린다.
-      4. 끼울 변은 기증자에서 **통째로** 떼어 온다 — 기증자는 자르지 않는다.
-         **오른끝이 받는 변보다 같거나 짧으면서 가장 넓은 것**을 고른다.
-      5. 제 좌표 그대로 놓는다. 눌러 맞추지도, 옮기지도 않는다.
-
-        {"op": "swapRadical", "form": ["795d", "7949", "7950"],
-         "from": ["7940", "7946", ...], "cps": ["793e", "7948", ...]}
-    """
-    cps = [cp(c) for c in (spec.get("cps") or [])]
-    forms = _forms(font, spec, spec.get("cps") or [])
-    if not forms:
-        print("swapRadical: 기준 자형이 없다 — 넘긴다")
-        return
-    pool = []
-    for one in donor_list(font, spec):
-        cs = list(one.foreground)
-        best, rad = None, None
-        for f in forms.values():
-            got, how = O._fit_form(cs, f)
-            if got is None:
-                continue
-            if best is None or how > best:
-                left, _ = O.beside_form(cs, f)
-                if left:
-                    best, rad = how, left
-        if rad is None:
-            continue
-        bb = O.bbox(rad)
-        em = one.width or 1000
-        if not (0.20 * em <= bb[1] - bb[0] <= 0.50 * em):
-            continue
-        if bb[3] - bb[2] < 0.40 * em:
-            continue
-        pool.append((one, rad, bb))
-    if not pool:
-        print("swapRadical: 기증자가 없다 — 넘긴다")
-        return
-    names = {one.glyphname for one, _, _ in pool}
-    done, miss = [], []
-    for glyph in selected_glyphs(font, spec):
-        if glyph.glyphname in names:
-            continue
-        cs = list(glyph.foreground)
-        pick, how = None, -1.0
-        for f in forms.values():
-            _, got = O._fit_form(cs, f)
-            if got > how:
-                pick, how = f, got
-        left, body = (O.beside_form(cs, pick, crumb=0.2) if pick
-                      else (None, None))
-        if not left or not body:
-            miss.append(glyph.glyphname)
-            continue
-        edge = O.bbox(left)[1]
-        ok = [t for t in pool if t[2][1] <= edge + 1]
-        one, src, bb = (max(ok, key=lambda t: t[2][1] - t[2][0]) if ok
-                        else min(pool, key=lambda t: t[2][1]))
-        layer = fontforge.layer()
-        layer.is_quadratic = glyph.foreground.is_quadratic
-        for c in body:
-            layer += c
-        for c in src:
-            layer += c
-        width = glyph.width
-        glyph.foreground = layer
-        glyph.correctDirection()
-        glyph.width = width
-        done.append("%s ← %s (%+d)" % (glyph.glyphname, one.glyphname,
-                                       round(bb[1] - edge)))
-    if done:
-        print("swapRadical: " + " · ".join(done))
-    if miss:
-        print("swapRadical: 못 가른 것 " + " ".join(miss))
 
 
 # --------------------------------------------------------------------------
@@ -4365,7 +3987,6 @@ def _part_at(ctx, font, name, em, want, split_tmpl):
     return None
 
 
-@op("rebuildPart")
 def op_rebuild_part(ctx, font, spec, source_half):
     """받는 글리프에서 성분 하나를 지우고, 기증자의 같은 성분을 **세로선에 맞춰** 넣는다.
 
@@ -4379,7 +4000,7 @@ def op_rebuild_part(ctx, font, spec, source_half):
          변만 지나는 칼선 하나를 찾아 칼선이 지나는 가로획만 줄인다(늘인다). 네모
          윗변(오른쪽 세로선의 위 끝) 위의 점은 옮기지 않는다 — 맨 위 삐침은 그대로.
 
-        {"op": "rebuildPart", "base": "uni6168.jp83", "from": "6f11",
+        {"op": "swapSide", "rebuild": true, "base": "uni6168.jp83", "from": "6f11",
          "part": {"minHeight": 0.7, "left": [0.2, 0.45], "maxWidth": 0.45},
          "split": "IBM-Plex-Sans-JP/IBMPlexSansJP-{cjkSrc}.ttf", "cps": ["6168"]}
     """
@@ -4389,7 +4010,7 @@ def op_rebuild_part(ctx, font, spec, source_half):
     old = _part_at(ctx, font, spec["base"], em, want, split_tmpl)
     new = _part_at(ctx, font, spec["from"], em, want, split_tmpl)
     if not old or not new:
-        print("rebuildPart: 성분을 못 뗌 (%s %s · %s %s)" % (spec["base"], bool(old), spec["from"], bool(new)))
+        print("swapSide rebuild: 성분을 못 뗌 (%s %s · %s %s)" % (spec["base"], bool(old), spec["from"], bool(new)))
         return
     old_part, rest = old
     new_part = new[0]
@@ -4409,13 +4030,13 @@ def op_rebuild_part(ctx, font, spec, source_half):
     if fitted is None:
         fitted, knife = O.narrow_across(moved, want_r - gr, gl, gr, below=top)
     if fitted is None:
-        print("rebuildPart: 오른쪽 세로선을 맞출 칼선이 없다 — 넘긴다")
+        print("swapSide rebuild: 오른쪽 세로선을 맞출 칼선이 없다 — 넘긴다")
         return
     done = []
     for glyph in selected_glyphs(font, spec):
         relay(glyph, [[c.dup() for c in rest], [c.dup() for c in fitted]])
         done.append(glyph.glyphname)
-    print("rebuildPart: %s ← %s 의 성분 (옮김 %+d · 가로획 %+d)"
+    print("swapSide rebuild: %s ← %s 의 성분 (옮김 %+d · 가로획 %+d)"
           % (", ".join(done), spec["from"], round(dx), round(want_r - gr)))
 
 
@@ -4614,7 +4235,6 @@ def op_even_bar_trim_leg(ctx, font, spec, source_half):
         print("evenBarTrimLeg: %s" % ", ".join(done))
 
 
-@op("evenOverhang")
 def op_even_overhang(ctx, font, spec, source_half):
     """맨 아래 가로선이 좌우로 빠져나온 길이를 같게 — 더 나온 쪽 끝만 안으로 옮긴다.
 
@@ -4623,7 +4243,7 @@ def op_even_overhang(ctx, font, spec, source_half):
     옆선 사이를 잰다. 더 나온 쪽 끝의 점을 윗변·아랫변 모두 같은 x 로 옮기므로 끝은
     곧은 세로 모서리 그대로고 굵기도 그대로다.
 
-        {"op": "evenOverhang", "cps": ["76ca"]}
+        {"op": "evenBar", "bottom": true, "cps": ["76ca"]}
     """
     done = []
     for glyph in selected_glyphs(font, spec):
@@ -4635,7 +4255,7 @@ def op_even_overhang(ctx, font, spec, source_half):
         yt = min(p.y for p in on if p.y > y0 + 1)          # 가로선 윗변
         top = sorted(p.x for p in on if abs(p.y - yt) < .5)
         if len(top) < 4:
-            print("evenOverhang: %s 에서 가로선 윗변을 못 찾았다" % glyph.glyphname)
+            print("evenBar bottom: %s 에서 가로선 윗변을 못 찾았다" % glyph.glyphname)
             continue
         left, right = top[1] - top[0], top[-1] - top[-2]
         if abs(left - right) < 0.5:
@@ -4651,7 +4271,7 @@ def op_even_overhang(ctx, font, spec, source_half):
         done.append("%s %s %d→%d" % (glyph.glyphname, "왼" if left > right else "오른",
                                      round(max(left, right)), round(min(left, right))))
     if done:
-        print("evenOverhang: %s" % ", ".join(done))
+        print("evenBar bottom: %s" % ", ".join(done))
 
 
 # --------------------------------------------------------------------------
