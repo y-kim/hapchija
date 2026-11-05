@@ -3153,13 +3153,19 @@ def straighten(contours, idx, pick, center):
 
     idx     그 획이 들어 있는 윤곽 번호
     pick    그 윤곽에서 획에 해당하는 점 번호들
-    center  세운 획을 놓을 x
+    center  세운 획을 놓을 x (None 이면 아래 끝의 가운데 — 밑동 자리 그대로)
     """
     pts = list(contours[idx])
     ylo = min(pts[k].y for k in pick)
     yhi = max(pts[k].y for k in pick)
     xlo = [pts[k].x for k in pick if abs(pts[k].y - ylo) < 1]
+    if len(xlo) < 2:
+        xlo = [pts[k].x for k in sorted((k for k in pick if pts[k].on_curve),
+                                        key=lambda k: pts[k].y)[:2]]
     xhi = [pts[k].x for k in pick if abs(pts[k].y - yhi) < 1]
+    if len(xhi) < 2:                        # 끝이 비스듬히 잘렸다 — 맨 위 on 점 둘로
+        xhi = [pts[k].x for k in sorted((k for k in pick if pts[k].on_curve),
+                                        key=lambda k: -pts[k].y)[:2]]
     clo = (min(xlo) + max(xlo)) / 2.0
     chi = (min(xhi) + max(xhi)) / 2.0
 
@@ -3170,6 +3176,8 @@ def straighten(contours, idx, pick, center):
     right = [o for o in off if o > 0]
     left = [o for o in off if o < 0]
     width = sum(right) / len(right) - sum(left) / len(left)
+    if center is None:                      # 밑동 가운데에 세운다
+        center = clo
     L, R = round(center - width / 2), round(center + width / 2)
 
     new = []

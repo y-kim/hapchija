@@ -50,13 +50,16 @@ def merged_codepoints(ctx, source, styles):
 
 
 def composed_codepoints(source):
-    """이 소스의 ops 가 compose 로 새로 만드는 코드포인트. 소스 파일의 cmap 에는
-    없지만 이 소스가 내놓는 것이므로 배정에 넣는다."""
+    """이 소스의 ops 가 compose 나 copyGlyph(create) 로 새로 만드는 코드포인트.
+    소스 파일의 cmap 에는 없지만 이 소스가 내놓는 것이므로 배정에 넣는다
+    (淃 은 JP 에 없어 SC 가 채우던 것을 JP preOps 가 倦 으로 새로 짓는다)."""
     out = set()
     for key in ("preOps", "ops", "opsAfter"):
         for spec in source.get(key) or []:
             if spec.get("op") == "compose":
                 out.add(R.cp(spec["cp"]))
+            elif spec.get("op") == "copyGlyph" and spec.get("create"):
+                out.update(R.cp(c) for c in spec.get("cps", []))
     return out
 
 
