@@ -136,16 +136,17 @@ def move_output(root, prefix, build_dir, dir_name):
     return dest, moved
 
 
-def check(rec, build_dir, families, styles):
+def check(rec, build_dir, families, styles, unhinted=None):
     from fontTools.ttLib import TTFont
 
     expected, missing = [], []
     for prefix, dir_name in families:
-        for style in styles:
-            path = os.path.join(build_dir, dir_name, "%s-%s.ttf" % (prefix, style["file"]))
-            expected.append(path)
-            if not os.path.isfile(path):
-                missing.append(path)
+        for sub in [""] + ([unhinted] if unhinted else []):
+            for style in styles:
+                path = os.path.join(build_dir, dir_name, sub, "%s-%s.ttf" % (prefix, style["file"]))
+                expected.append(path)
+                if not os.path.isfile(path):
+                    missing.append(path)
 
     for path in missing:
         print("MISSING: " + path, file=sys.stderr)
@@ -257,10 +258,14 @@ def missing_sources(rec, root):
     """레시피가 쓰는 소스 중 실제로 없는 파일."""
     dirs = R.source_dirs(rec, root)
     out = []
-    for source in rec.get("sources", []):
+    paths = [s["path"] for s in rec.get("sources", [])]
+    borrow = rec.get("finalize", {}).get("borrowHints")
+    if borrow:
+        paths.append(borrow["from"])
+    for path in paths:
         for style in rec.get("styles", []):
             try:
-                p = R.resolve(dirs, source["path"].format(**style))
+                p = R.resolve(dirs, path.format(**style))
             except KeyError:
                 continue
             if not os.path.exists(p):
@@ -322,20 +327,29 @@ def cmd_build(args):
     work = os.path.join(root, rec.get("workDir", "work"))
     os.makedirs(work, exist_ok=True)
 
+    # 힌팅을 넣는 레시피는 힌팅을 뺀 판을 이 하위 디렉터리에 함께 만든다
+    unhinted = rec["finalize"].get("unhintedDir") if rec["finalize"].get("hinting") else None
     families = []
     for name, prefix, dir_name in wanted:
         print("### Build: %s ###" % name)
         variants = {} if name == "normal" else {name: True}
         run_compose(recipe_path, root, work, variants, files, jobs=args.jobs)
-        finalize.run(rec, work, variants, files)
+        finalize.run(rec, work, variants, files, R.source_dirs(rec, root))
         dest, moved = move_output(work, prefix, build_dir, dir_name)
         print("-> %s (%d 개)" % (os.path.relpath(dest, root), moved))
+        if unhinted:
+            udir = os.path.join(dest, unhinted)
+            os.makedirs(udir, exist_ok=True)
+            for f in files:
+                name = "%s-%s.ttf" % (prefix, f)
+                finalize.dehint(os.path.join(dest, name), os.path.join(udir, name))
+            print("-> %s (힌팅을 뺀 %d 개)" % (os.path.relpath(udir, root), len(files)))
         families.append((prefix, dir_name))
 
     shutil.rmtree(work, ignore_errors=True)
 
     print("### Checking generated fonts ###")
-    rc = check(rec, build_dir, families, styles)
+    rc = check(rec, build_dir, families, styles, unhinted)
     print("### Build OK ###" if rc == 0 else "### Build FAILED ###")
     return rc
 

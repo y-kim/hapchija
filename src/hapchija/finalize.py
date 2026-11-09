@@ -14,7 +14,9 @@ import unicodedata
 
 from fontTools.merge import Merger
 from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib.tables import ttProgram
 
+from . import borrowhints
 from . import recipe as R
 
 # 부품에 남아 있어도 합성 결과에는 의미가 없고, fontTools 병합을 깨뜨리기도 하는
@@ -170,6 +172,41 @@ def fix_tables(rec, path, style):
     font.close()
 
 
+def dehint(src, dst):
+    """src 에서 힌팅만 걷어 dst 로 쓴다. 윤곽과 나머지 테이블은 그대로다.
+
+    배포할 때 hinted 와 함께 unhinted 판을 싣는다. 힌팅은 Windows 의 작은 크기에서
+    또렷하지만, macOS 나 고해상도 화면처럼 힌팅을 쓰지 않는 곳에서는 파일만 커진다.
+    """
+    font = TTFont(src, recalcBBoxes=False, recalcTimestamp=False)
+    for tag in ("fpgm", "prep", "cvt ", "hdmx", "LTSH", "VDMX"):
+        if tag in font:
+            del font[tag]
+    glyf = font["glyf"]
+    for name in font.getGlyphOrder():
+        g = glyf[name]
+        if hasattr(g, "program"):
+            g.program = ttProgram.Program()
+            g.program.fromBytecode(b"")
+    m = font["maxp"]
+    m.maxZones, m.maxTwilightPoints, m.maxStorage = 1, 0, 0
+    m.maxFunctionDefs, m.maxInstructionDefs = 0, 0
+    m.maxStackElements, m.maxSizeOfInstructions = 0, 0
+    # 무힌팅 글꼴의 gasp 는 fix_tables 와 같게 모든 크기를 15 로
+    gasp = newTable("gasp")
+    gasp.version = 1
+    gasp.gaspRange = {0xFFFF: 15}
+    font["gasp"] = gasp
+    # ttfautohint 가 버전 문자열 뒤에 붙인 옵션을 뗀다
+    for rec in font["name"].names:
+        if rec.nameID == 5:
+            text = rec.toUnicode()
+            if "; ttfautohint" in text:
+                rec.string = text.split("; ttfautohint")[0]
+    font.save(dst)
+    font.close()
+
+
 def add_locl(rec, path):
     """GSUB 에 나라별 자형(locl)을 더한다 — 이미 있는 기능은 그대로 둔다.
 
@@ -301,14 +338,26 @@ def add_locl(rec, path):
           + (" · %s 기본" % default if default else "") + " · 글리프 %d" % len(order))
 
 
-def run(rec, work_dir, variants, styles=None):
-    """styles 는 합칠 스타일의 파일 이름 목록. 비면 전부."""
+def run(rec, work_dir, variants, styles=None, src_dirs=None):
+    """styles 는 합칠 스타일의 파일 이름 목록. 비면 전부.
+
+    src_dirs 는 소스를 찾을 디렉터리. finalize.borrowHints 의 기증 글꼴을 찾는 데 쓴다.
+    """
     suffix = R.variant_suffix(rec, variants)
     prefix = R.family_short(rec, suffix)
     styles = R.pick_styles(rec, styles)
     sources = R.active_sources(rec, variants)
     extra = [s for s in sources if s.get("role") != "base"]
     hinting = rec["finalize"].get("hinting", [])
+    # 힌팅을 뼈대에만 넣을지(기본), 부품까지 합친 글꼴 전체에 넣을지.
+    # ttfautohint 에는 한글·한자 스크립트가 없어서, 전체에 넣으면 그 글자들은
+    # 대체 스크립트(-f, 기본 none)로 힌팅된다. 로마자 쪽 높이 영역은 받지 않고
+    # 획만 픽셀에 맞춘다.
+    hint_merged = bool(hinting) and rec["finalize"].get("hintMerged", False)
+    # 윤곽이 같은 글자는 남이 손본 힌팅을 빌려 온다 (borrowhints.py).
+    borrow = rec["finalize"].get("borrowHints")
+    if borrow and not hint_merged:
+        raise SystemExit("ERROR: finalize.borrowHints 는 hintMerged 와 함께 쓴다")
     # 부품에서 떼어 낼 테이블. 레시피가 finalize.stripFromParts 로 바꿀 수 있다.
     strip_tags = tuple(rec["finalize"].get("stripFromParts", STRIP_FROM_PARTS))
     parts_dir = os.path.join(work_dir, "parts")
@@ -335,7 +384,7 @@ def run(rec, work_dir, variants, styles=None):
             if os.path.exists(part):
                 parts.append(part)
 
-        if hinting:
+        if hinting and not hint_merged:
             print("ttfautohint: " + name)
             hinted = os.path.join(work_dir, "hinted-" + name)
             subprocess.run(["ttfautohint"] + list(hinting) + ["-I", base, hinted],
@@ -366,6 +415,19 @@ def run(rec, work_dir, variants, styles=None):
         if hinted != base:
             os.remove(hinted)
 
+        if hint_merged:
+            print("ttfautohint (전체): " + name)
+            hinted = os.path.join(work_dir, "hinted-" + name)
+            subprocess.run(["ttfautohint"] + list(hinting) + ["-I", base, hinted],
+                           check=True)
+            os.replace(hinted, base)
+
+        if borrow:
+            donor = R.resolve(src_dirs or ["."], borrow["from"].format(**style))
+            moved, differ = borrowhints.borrow(base, donor, borrow["within"])
+            print("borrowHints: %s ← %s %d자%s" % (name, os.path.basename(donor), moved,
+                  " (윤곽이 달라 못 옮김 %d)" % differ if differ else ""))
+
         print("fix tables: " + name)
         fix_tables(rec, base, style)
         if rec.get("locl"):
@@ -379,11 +441,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="부품을 합치고 테이블을 바로잡는다")
     parser.add_argument("--recipe", required=True)
     parser.add_argument("--dir", default=".")
+    parser.add_argument("--root", default=".", help="소스 디렉터리를 찾을 저장소 루트")
     parser.add_argument("--variant", action="append", default=[])
     parser.add_argument("--styles", default=None,
                         help="합칠 스타일의 파일 이름들, 쉼표로 구분. 없으면 전부")
     args = parser.parse_args(argv)
-    run(R.load(args.recipe), args.dir, {v: True for v in args.variant}, args.styles)
+    rec = R.load(args.recipe)
+    run(rec, args.dir, {v: True for v in args.variant}, args.styles,
+        R.source_dirs(rec, args.root))
 
 
 if __name__ == "__main__":

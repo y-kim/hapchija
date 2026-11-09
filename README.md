@@ -154,6 +154,17 @@ FontForge 의 언어 이름입니다.
 - **우선순위 순서**입니다. 앞선 소스가 같은 코드포인트를 이깁니다.
   라틴 + 한글 + 일본어처럼 셋 이상도 됩니다.
 - `role: base` 인 소스가 최종 글꼴의 뼈대가 됩니다. 힌팅도 여기에만 들어갑니다.
+  `finalize.hintMerged` 를 `true` 로 두면 부품까지 합친 뒤 글꼴 전체에
+  힌팅합니다. ttfautohint 에 스크립트가 없는 한글·한자·기호는 대체 스크립트
+  (`-f`, 기본 `none`)로 획만 픽셀에 맞춥니다. 파일은 두 배쯤 커집니다.
+- 그 위에 `finalize.borrowHints` 로, 윤곽이 점 하나까지 같은 글자는 남이 손본
+  힌팅을 빌려 옵니다. 기증 글꼴의 fpgm·prep·CVT 를 ttfautohint 것 뒤에 붙이고
+  번호를 밉니다. 지금은 FontLab 이 만든 힌팅(IBM Plex Sans KR hinted)만 읽습니다.
+
+  ```json
+  "borrowHints": {"from": "IBM-Plex-Sans-KR/hinted/IBMPlexSansKR-{cjkSrc}.ttf",
+                  "within": ["AC00-D7A3"]}
+  ```
 - `when` 이 붙은 소스는 그 변종을 만들 때만 포함됩니다.
 - `path` 의 `{...}` 에는 `styles` 항목의 필드 이름을 씁니다.
 - 소스의 `upem` 이 달라도 `target.em` 으로 자동 정규화됩니다. 2048 짜리 글꼴을
