@@ -63,10 +63,11 @@ def composed_codepoints(source):
     return out
 
 
-def available_codepoints(ctx, source, styles):
+def available_codepoints(ctx, source, styles, drop=True):
     """이 소스가 내놓을 수 있는 코드포인트.
 
-    keepRanges 가 있으면 그 범위로 제한하고, dropRanges 는 빼낸다.
+    keepRanges 가 있으면 그 범위로 제한하고, dropRanges 는 빼낸다 (`drop` 을 끄면
+    빼지 않는다 — locl 이 나라 소스의 본디 글리프를 찾을 때).
     dropRanges 는 사용자 정의 영역(PUA)을 막는 데 쓴다. CJK 글꼴은 벤더 내부용
     글리프를 PUA 에 수천 개씩 넣어 두는데 (IBM Plex Sans TC 는 4,729 자),
     합성 결과에 노출될 이유가 없고 Nerd Fonts 영역과 정면으로 부딪친다.
@@ -86,7 +87,7 @@ def available_codepoints(ctx, source, styles):
     cps |= composed_codepoints(source)
     if source.get("keepRanges"):
         cps &= range_set(source["keepRanges"])
-    if source.get("dropRanges"):
+    if drop and source.get("dropRanges"):
         cps -= range_set(source["dropRanges"])
     return cps
 
@@ -244,6 +245,10 @@ def locl_extras(ctx, rec, sources, assigned, styles):
       * s 와 owner 의 소스 글리프 윤곽이 다르다 (s ≠ owner). 굵기마다 소스 파일을
         대어 한 굵기라도 다르면 싣는다.
 
+    s 가 dropRanges 로 뺀 글자도 본다. 기본 자형만 다음 소스에 맡기려고 뺀 것이라
+    (兌 를 JP·TC 에서 빼 SC 가 채우게 한 것), 그 나라 글에는 s 의 본디 글리프가
+    나와야 한다.
+
     같은 윤곽인 글자를 싣지 않아야 글리프 수가 TrueType 상한 안에 든다.
     """
     langs = R.locl_langs(rec)
@@ -261,7 +266,7 @@ def locl_extras(ctx, rec, sources, assigned, styles):
         src = by_id.get(sid)
         if src is None:
             raise SystemExit("ERROR: locl 이 모르는 소스 %r 를 가리킨다" % sid)
-        have = available_codepoints(ctx, src, styles) & han
+        have = available_codepoints(ctx, src, styles, drop=False) & han
         # 이 소스를 쓰는 태그들의 within 합집합만 싣는다
         scope = set()
         for tag, (s_id, enc) in langs.items():
