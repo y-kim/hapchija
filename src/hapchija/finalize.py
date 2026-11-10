@@ -220,6 +220,8 @@ def add_locl(rec, path):
     hani 로 모양을 잡는데, 그 스크립트가 없는 셰이퍼는 DFLT 로 간다. 새 언어
     시스템은 그 스크립트의 기본 언어 시스템이 가진 기능을 모두 물려받고 locl 을
     더한다 (언어 시스템이 생기면 기본 쪽 기능을 쓰지 않으므로).
+
+    `features` ({cv01: "ZHT", …}) 가 있으면 같은 치환을 그 기능 태그로도 건다.
     """
     from fontTools.ttLib.tables import otTables as ot
 
@@ -295,6 +297,30 @@ def add_locl(rec, path):
         gsub.ScriptList.ScriptRecord.append(sr)
         return sr
 
+    # 기능 태그(cvXX)로도 건다 — 언어 태그를 넘기지 않는 터미널·편집기를 위해.
+    # 언어의 치환표를 그대로 쓰고, 기본 언어를 가리키면 locl 이 바꾼 글리프를
+    # 기본 글리프로 되돌리는 치환을 새로 만든다 (locl 다음에 돌도록 맨 뒤에 둔다).
+    cv = R.locl_features(rec)
+    cv_index = {}
+    for ftag, lang in sorted(cv.items()):
+        if lang in index:
+            cv_index[ftag] = index[lang]
+            continue
+        back = {}
+        for m in subs.values():
+            for base_name, alt in m.items():
+                back[alt] = base_name
+        st = ot.SingleSubst()
+        st.mapping = back
+        lk = ot.Lookup()
+        lk.LookupType = 1
+        lk.LookupFlag = 0
+        lk.SubTable = [st]
+        lk.SubTableCount = 1
+        lookups.append(lk)
+        cv_index[ftag] = len(lookups) - 1
+    gsub.LookupList.LookupCount = len(lookups)
+
     tags = ([default] if default else []) + sorted(langs)
     for script in ("DFLT", "hani"):
         sr = ensure_script(script)
@@ -316,6 +342,23 @@ def add_locl(rec, path):
             rec_.LangSys.FeatureCount = len(rec_.LangSys.FeatureIndex)
         sr.Script.LangSysRecord.sort(key=lambda r: r.LangSysTag)
         sr.Script.LangSysCount = len(sr.Script.LangSysRecord)
+    # cvXX 는 모든 스크립트의 모든 언어 시스템에 — 한자 글자열이 어느 스크립트로
+    # 모양을 잡든 켜지게
+    for ftag in sorted(cv_index):
+        fr = ot.FeatureRecord()
+        fr.FeatureTag = ftag
+        fr.Feature = ot.Feature()
+        fr.Feature.FeatureParams = None
+        fr.Feature.LookupListIndex = [cv_index[ftag]]
+        fr.Feature.LookupCount = 1
+        feats.append(fr)
+        fi = len(feats) - 1
+        for sr in gsub.ScriptList.ScriptRecord:
+            for ls in [sr.Script.DefaultLangSys] + [r.LangSys for r in sr.Script.LangSysRecord]:
+                if ls is None:
+                    continue
+                ls.FeatureIndex.append(fi)
+                ls.FeatureCount = len(ls.FeatureIndex)
     gsub.ScriptList.ScriptRecord.sort(key=lambda r: r.ScriptTag)
     gsub.ScriptList.ScriptCount = len(gsub.ScriptList.ScriptRecord)
     # 기능 목록은 태그 순이어야 한다 — 더한 locl 을 제자리로 옮기고 번호를 고쳐 준다
@@ -335,7 +378,9 @@ def add_locl(rec, path):
     font.close()
     print("  locl: " + " · ".join("%s→%s%s %d자" % (t, v[0], "(%s)" % v[1] if v[1] else "", len(subs[t]))
                                    for t, v in sorted(langs.items()))
-          + (" · %s 기본" % default if default else "") + " · 글리프 %d" % len(order))
+          + (" · %s 기본" % default if default else "")
+          + "".join(" · %s=%s" % (t, l) for t, l in sorted(cv.items()))
+          + " · 글리프 %d" % len(order))
 
 
 def run(rec, work_dir, variants, styles=None, src_dirs=None):
@@ -343,6 +388,7 @@ def run(rec, work_dir, variants, styles=None, src_dirs=None):
 
     src_dirs 는 소스를 찾을 디렉터리. finalize.borrowHints 의 기증 글꼴을 찾는 데 쓴다.
     """
+    rec = R.with_variant_locl(rec, variants)
     suffix = R.variant_suffix(rec, variants)
     prefix = R.family_short(rec, suffix)
     styles = R.pick_styles(rec, styles)

@@ -224,30 +224,86 @@ def resolve(dirs, relative):
     return os.path.join(dirs[0], relative)
 
 
+# locl 에서 언어 태그가 아닌 열쇠
+LOCL_KEYS = ("default", "ranges", "features", "variants")
+
+
+def with_variant_locl(rec, variants):
+    """켜진 변종의 `locl.variants.<이름>` 을 locl 에 덮은 레시피 (얕은 사본).
+
+    variantOutput 과 같은 방식이다. 변종마다 글리프 여유가 달라 (Nerd Fonts 아이콘이
+    1만 자를 먹는다) 나라별 자형을 싣는 범위를 따로 정해야 할 때 쓴다.
+    """
+    spec = rec.get("locl")
+    if not spec or not spec.get("variants"):
+        return rec
+    merged = dict(spec)
+    for name, on in (variants or {}).items():
+        if on:
+            merged.update(spec["variants"].get(name, {}))
+    out = dict(rec)
+    out["locl"] = merged
+    return out
+
+
 def locl_langs(rec):
-    """레시피의 locl 에서 {언어 태그: (소스 id, within)}. `default` 와 `ranges` 는 뺀다.
+    """레시피의 locl 에서 {언어 태그: (소스 id, within)}. LOCL_KEYS 와 `$` 열쇠는 뺀다.
 
     값은 소스 id 이거나 {"from": 소스 id, "within": 문자 집합} 이다. `within` 은
-    파이썬 코덱 이름(gb2312 · big5 …)으로, 그 인코딩에 드는 글자만 바꾼다.
+    파이썬 코덱 이름(gb2312 · big5 …)이나 WITHIN_LEVELS 의 이름으로, 그 안에 드는
+    글자만 바꾼다.
     """
     spec = rec.get("locl") or {}
     out = {}
     for k, v in spec.items():
-        if k in ("default", "ranges") or k.startswith("$"):
+        if k in LOCL_KEYS or k.startswith("$"):
             continue
         out[k] = (v, None) if isinstance(v, str) else (v["from"], v.get("within"))
     return out
 
 
+def locl_features(rec):
+    """레시피의 locl.features — {기능 태그(cv01 …): 언어 태그}.
+
+    터미널·편집기는 언어 태그를 넘기지 않아 locl 이 걸리지 않는다. 대신 기능 태그는
+    켤 수 있으므로 같은 치환을 cvXX 로도 건다. 언어 태그가 `default` 면 locl 이 바꾼
+    글리프를 기본 글리프로 되돌린다.
+    """
+    spec = rec.get("locl") or {}
+    feats = {k: v for k, v in (spec.get("features") or {}).items() if not k.startswith("$")}
+    langs = locl_langs(rec)
+    for tag, lang in feats.items():
+        if len(tag) != 4:
+            raise SystemExit("ERROR: locl.features 의 %r 는 네 글자 기능 태그가 아니다" % tag)
+        if lang not in langs and lang != spec.get("default"):
+            raise SystemExit("ERROR: locl.features 의 %s 가 모르는 언어 %r 를 가리킨다" % (tag, lang))
+    return feats
+
+
+# 인코딩의 1급(상용) 한자 — {이름: (코덱, 첫 바이트 범위, 두 바이트 범위)}.
+#   big5-1   : Big5 A440–C67E, 상용자 5,401자 (대만 상용국자 4,808자를 거의 덮는다)
+#   gb2312-1 : GB 2312 16–55 구 (B0A1–D7F9), 1급 한자 3,755자
+WITHIN_LEVELS = {
+    "big5-1": ("big5", (0xA440, 0xC67E)),
+    "gb2312-1": ("gb2312", (0xB0A1, 0xD7F9)),
+}
+
+
 def within_set(enc, cps):
-    """`cps` 가운데 인코딩 `enc` 로 적을 수 있는 코드포인트. enc 가 없으면 전부."""
+    """`cps` 가운데 `enc` 안에 드는 코드포인트. enc 가 없으면 전부.
+
+    enc 는 파이썬 코덱 이름이거나 WITHIN_LEVELS 의 이름이다.
+    """
     if not enc:
         return set(cps)
+    codec, span = WITHIN_LEVELS.get(enc, (enc, None))
     out = set()
     for c in cps:
         try:
-            chr(c).encode(enc)
+            b = chr(c).encode(codec)
         except (UnicodeEncodeError, LookupError):
+            continue
+        if span and not (len(b) == 2 and span[0] <= int.from_bytes(b, "big") <= span[1]):
             continue
         out.add(c)
     return out

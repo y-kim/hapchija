@@ -586,6 +586,7 @@ def compose(ctx, base_font, suffix, out_dir):
 
 def run(rec, root, out_dir, variants,
         plan_path=None, only_styles=None, plan_only=False):
+    rec = R.with_variant_locl(rec, variants)
     suffix = R.variant_suffix(rec, variants)
     styles = R.pick_styles(rec, only_styles)
     if not styles:
