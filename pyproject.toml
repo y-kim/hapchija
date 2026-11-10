@@ -19,6 +19,10 @@ classifiers = [
 # FontForge 와 ttfautohint 는 pip 로 설치할 수 없다. README 를 참고할 것.
 dependencies = ["fonttools>=4.40"]
 
+# hapchija verify 의 셰이핑 검사 (없으면 그 검사만 건너뛴다)
+[project.optional-dependencies]
+verify = ["uharfbuzz>=0.40"]
+
 [project.urls]
 Homepage = "https://github.com/y-kim/hapchija"
 

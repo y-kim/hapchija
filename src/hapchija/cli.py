@@ -23,7 +23,7 @@ import shutil
 import subprocess
 import sys
 
-from . import fetch, finalize, recipe as R
+from . import fetch, finalize, recipe as R, verify
 
 COMPOSE_MODULE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compose.py")
 
@@ -273,6 +273,35 @@ def missing_sources(rec, root):
     return sorted(set(out))
 
 
+def select(args, rec):
+    """-w · -s · --quick · --variant 로 고른 (스타일, 변종). 잘못이면 (None, None)."""
+    # 두께와 기울임. --quick 은 비어 있는 쪽을 normal 로 채운다.
+    weights = R.split_list(args.weight) or (["normal"] if args.quick else [])
+    slants = R.split_list(args.style) or (["normal"] if args.quick else [])
+    try:
+        styles = R.select_styles(rec, weights, slants)
+    except ValueError as exc:
+        print("ERROR: %s" % exc, file=sys.stderr)
+        return None, None
+    if not styles:
+        print("ERROR: 두께 %s 에 스타일 %s 인 것이 레시피에 없습니다"
+              % (",".join(weights) or "*", ",".join(slants) or "*"), file=sys.stderr)
+        return None, None
+
+    # 변종. 비우면 전부, normal 은 변종 없는 기본 빌드.
+    wanted = variants_of(rec)
+    names = R.split_list(args.variant)
+    if names:
+        known = [v[0] for v in wanted]
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            print("ERROR: 그런 변종이 없습니다: %s" % ", ".join(unknown), file=sys.stderr)
+            print("  있는 변종: %s" % ", ".join(known), file=sys.stderr)
+            return None, None
+        wanted = [v for v in wanted if v[0] in names]
+    return styles, wanted
+
+
 def cmd_build(args):
     recipe_path, rec, root = resolve(args)
     if not rec:
@@ -291,30 +320,9 @@ def cmd_build(args):
 
     build_dir = os.path.join(root, rec.get("build", {}).get("outputDir", "build"))
 
-    # 두께와 기울임. --quick 은 비어 있는 쪽을 normal 로 채운다.
-    weights = R.split_list(args.weight) or (["normal"] if args.quick else [])
-    slants = R.split_list(args.style) or (["normal"] if args.quick else [])
-    try:
-        styles = R.select_styles(rec, weights, slants)
-    except ValueError as exc:
-        print("ERROR: %s" % exc, file=sys.stderr)
+    styles, wanted = select(args, rec)
+    if styles is None:
         return 2
-    if not styles:
-        print("ERROR: 두께 %s 에 스타일 %s 인 것이 레시피에 없습니다"
-              % (",".join(weights) or "*", ",".join(slants) or "*"), file=sys.stderr)
-        return 2
-
-    # 변종. 비우면 전부, normal 은 변종 없는 기본 빌드.
-    wanted = variants_of(rec)
-    names = R.split_list(args.variant)
-    if names:
-        known = [v[0] for v in wanted]
-        unknown = [n for n in names if n not in known]
-        if unknown:
-            print("ERROR: 그런 변종이 없습니다: %s" % ", ".join(unknown), file=sys.stderr)
-            print("  있는 변종: %s" % ", ".join(known), file=sys.stderr)
-            return 2
-        wanted = [v for v in wanted if v[0] in names]
 
     print("recipe : %s (%s)" % (os.path.relpath(recipe_path), rec.get("name")))
     print("root   : %s" % root)
@@ -350,8 +358,34 @@ def cmd_build(args):
 
     print("### Checking generated fonts ###")
     rc = check(rec, build_dir, families, styles, unhinted)
+    if rc == 0 and not args.no_verify:
+        print("### Verifying ###")
+        rc = verify.run(rec, root, build_dir, wanted, styles, unhinted,
+                        baseline=args.baseline, compare=not args.no_baseline)
     print("### Build OK ###" if rc == 0 else "### Build FAILED ###")
     return rc
+
+
+def cmd_verify(args):
+    recipe_path, rec, root = resolve(args)
+    if not rec:
+        return 2
+    styles, wanted = select(args, rec)
+    if styles is None:
+        return 2
+    build_dir = os.path.join(root, rec.get("build", {}).get("outputDir", "build"))
+    unhinted = rec["finalize"].get("unhintedDir") if rec["finalize"].get("hinting") else None
+    rc = check(rec, build_dir, [(p, d) for _, p, d in wanted], styles, unhinted)
+    if rc:
+        return rc
+    return verify.run(rec, root, build_dir, wanted, styles, unhinted,
+                      baseline=args.baseline, compare=not args.no_baseline)
+
+
+def add_verify_args(p):
+    p.add_argument("--baseline", default=None,
+                   help="비교할 이전 판 — 디렉터리나 릴리즈 zip (기본: dist/ 의 가장 새 zip)")
+    p.add_argument("--no-baseline", action="store_true", help="이전 판과 비교하지 않는다")
 
 
 def main(argv=None):
@@ -390,13 +424,25 @@ def main(argv=None):
     p.add_argument("-j", "--jobs", type=int,
                    default=int(os.environ.get("JOBS") or 0) or max(1, multiprocessing.cpu_count() - 1),
                    help="동시에 만들 두께 수 (기본: CPU 수 - 1)")
+    p.add_argument("--no-verify", action="store_true", help="빌드 뒤 검증(verify)을 건너뛴다")
+    add_verify_args(p)
     p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("verify", help="빌드한 글꼴의 불변 조건을 재고 이전 판과 비교한다")
+    p.add_argument("--recipe", default=os.environ.get("RECIPE"))
+    p.add_argument("--root", default=None)
+    p.add_argument("-w", "--weight", action="append", metavar="W[,W...]")
+    p.add_argument("-s", "--style", action="append", metavar="S[,S...]")
+    p.add_argument("--variant", action="append", metavar="V[,V...]")
+    p.add_argument("--quick", action="store_true")
+    add_verify_args(p)
+    p.set_defaults(func=cmd_verify)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):
         parser.print_help()
         return 2
-    if args.cmd in ("build", "fetch", "options") and not args.recipe:
+    if args.cmd in ("build", "fetch", "options", "verify") and not args.recipe:
         print("ERROR: --recipe 가 필요합니다", file=sys.stderr)
         return 2
     return args.func(args)
