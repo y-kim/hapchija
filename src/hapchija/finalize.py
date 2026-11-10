@@ -112,6 +112,73 @@ def map_canonical(font, ranges):
     return added
 
 
+def inherit_default_features(path):
+    """모든 스크립트가 DFLT 의 기본 기능을 물려받게 한다 (GSUB · GPOS).
+
+    부품을 합치면 부품의 스크립트(hani · hang · kana …)가 기록만 남고, 기본 언어
+    시스템이 비거나 그 부품의 기능만 남는다. 셰이퍼는 글자열의 스크립트 기록을
+    찾으면 DFLT 로 내려가지 않으므로, 한글·한자·가나 글자열에 붙은 숫자와 기호에
+    zero · frac · kern · mark 같은 기능이 걸리지 않는다.
+
+    언어 시스템마다 DFLT 기본 언어 시스템의 기능을 태그별로 맞춘다.
+      * 그 태그가 없으면 DFLT 의 것을 더한다.
+      * 있는데 그 lookup 이 DFLT 것의 부분집합이면 DFLT 의 것으로 바꾼다
+        (hani 의 kern 이 한글·가나 커닝만 가진 경우).
+      * 스크립트에만 있는 기능은 그대로 둔다 (cyrl 의 locl).
+    기본 언어 시스템이 없으면 DFLT 의 것을 복사해 만든다.
+    """
+    from fontTools.ttLib.tables import otTables as ot
+
+    font = TTFont(path, recalcBBoxes=False, recalcTimestamp=False)
+    report = []
+    for tag in ("GSUB", "GPOS"):
+        if tag not in font:
+            continue
+        table = font[tag].table
+        if not table.ScriptList or not table.FeatureList:
+            continue
+        feats = table.FeatureList.FeatureRecord
+        dflt = next((r for r in table.ScriptList.ScriptRecord if r.ScriptTag == "DFLT"), None)
+        if dflt is None or dflt.Script.DefaultLangSys is None:
+            continue
+        base = {feats[i].FeatureTag: i for i in dflt.Script.DefaultLangSys.FeatureIndex}
+
+        def lookups(i):
+            return set(feats[i].Feature.LookupListIndex)
+
+        changed = set()
+        for sr in table.ScriptList.ScriptRecord:
+            if sr.ScriptTag == "DFLT":
+                continue
+            if sr.Script.DefaultLangSys is None:
+                ls = ot.LangSys()
+                ls.LookupOrder = None
+                ls.ReqFeatureIndex = 0xFFFF
+                ls.FeatureIndex = []
+                ls.FeatureCount = 0
+                sr.Script.DefaultLangSys = ls
+                changed.add(sr.ScriptTag)
+            for ls in [sr.Script.DefaultLangSys] + [r.LangSys for r in sr.Script.LangSysRecord]:
+                have = {feats[i].FeatureTag: i for i in ls.FeatureIndex}
+                new = list(ls.FeatureIndex)
+                for ftag, bi in base.items():
+                    if ftag not in have:
+                        new.append(bi)
+                    elif have[ftag] != bi and lookups(have[ftag]) < lookups(bi):
+                        new[new.index(have[ftag])] = bi
+                    else:
+                        continue
+                    changed.add(sr.ScriptTag)
+                ls.FeatureIndex = sorted(set(new))
+                ls.FeatureCount = len(ls.FeatureIndex)
+        if changed:
+            report.append("%s %s" % (tag, " ".join(sorted(changed))))
+    if report:
+        font.save(path)
+        print("  기본 기능 물려받음: " + " · ".join(report))
+    font.close()
+
+
 def fix_tables(rec, path, style):
     fin = rec["finalize"]
     cfg = fin.get("os2", {})
@@ -483,6 +550,7 @@ def run(rec, work_dir, variants, styles=None, src_dirs=None):
 
         print("fix tables: " + name)
         fix_tables(rec, base, style)
+        inherit_default_features(base)
         if rec.get("locl"):
             add_locl(rec, base)
 
