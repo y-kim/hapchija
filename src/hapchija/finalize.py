@@ -278,14 +278,22 @@ def add_locl(rec, path):
         feat_of[tag] = len(feats) - 1
 
     def ensure_script(tag):
-        for sr in gsub.ScriptList.ScriptRecord:
-            if sr.ScriptTag == tag:
-                return sr
-        sr = ot.ScriptRecord()
-        sr.ScriptTag = tag
-        sr.Script = ot.Script()
-        sr.Script.LangSysRecord = []
-        sr.Script.LangSysCount = 0
+        """스크립트를 찾거나 만든다. 기본 언어 시스템이 없으면 DFLT 의 것을 복사해 둔다.
+
+        부품을 합치다 보면 언어 시스템만 있고 기본 언어 시스템은 없는 스크립트가
+        생긴다 (hani). 셰이퍼는 그 스크립트를 고르고 나면 DFLT 로 내려가지 않으므로,
+        언어를 지정하지 않은 한자에 기능이 하나도 걸리지 않는다.
+        """
+        sr = next((r for r in gsub.ScriptList.ScriptRecord if r.ScriptTag == tag), None)
+        if sr is not None and sr.Script.DefaultLangSys is not None:
+            return sr
+        if sr is None:
+            sr = ot.ScriptRecord()
+            sr.ScriptTag = tag
+            sr.Script = ot.Script()
+            sr.Script.LangSysRecord = []
+            sr.Script.LangSysCount = 0
+            gsub.ScriptList.ScriptRecord.append(sr)
         dflt = next((r for r in gsub.ScriptList.ScriptRecord if r.ScriptTag == "DFLT"), None)
         base = dflt.Script.DefaultLangSys if dflt and dflt.Script.DefaultLangSys else None
         ls = ot.LangSys()
@@ -294,7 +302,6 @@ def add_locl(rec, path):
         ls.FeatureIndex = list(base.FeatureIndex) if base else []
         ls.FeatureCount = len(ls.FeatureIndex)
         sr.Script.DefaultLangSys = ls
-        gsub.ScriptList.ScriptRecord.append(sr)
         return sr
 
     # 기능 태그(cvXX)로도 건다 — 언어 태그를 넘기지 않는 터미널·편집기를 위해.
