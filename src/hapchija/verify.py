@@ -12,20 +12,27 @@ build 가 끝나면 저절로 돈다 (--no-verify 로 끈다).
    glyphs       글리프 수가 65,535 안이다. verify.minGlyphMargin 보다 적게 남으면 알린다.
    context      GSUB 기능이 바꾸는 공통 문자(숫자 · 기호)가 어느 문자 체계 옆에서든
                  똑같이 바뀐다. 기능 목록에서 시험을 뽑으므로 기대값을 따로 적지 않는다.
+                 문맥은 글꼴의 GSUB · GPOS 스크립트 목록에서 만든다.
    positions    공통 문자의 자리(kern · mark)가 어느 문자 체계 옆에서든 같다.
+   hinting      힌팅을 넣는 레시피면 hinted 판에 fpgm 이 있고 unhinted 판에 없다.
+
+   여기까지는 모든 글꼴에 돈다. 아래는 레시피가 그 일을 시킬 때만 — 레시피가 약속한
+   것을 검사한다.
+
    locl         레시피의 locl · locl.features 대로 언어와 기능이 글자를 바꾼다.
                  글꼴에 실린 `uniXXXX.소스` 글리프에서 표본을 뽑는다.
-   canonical    KS X 1001 호환 한자(U+F900–FA0B)가 정준 한자와 같은 글리프다
-                 (verify.canonicalRanges 로 바꾼다).
-   monospace    finalize.os2.isFixedPitch 면 모든 폭이 0 · 반각 · 전각 가운데 하나다.
-   hinting      힌팅을 넣는 레시피면 hinted 판에 fpgm 이 있고 unhinted 판에 없다.
+   canonical    finalize.mapCanonical.unify 의 범위에서 호환 문자가 정준 문자와 같은
+                 윤곽이다 (verify.canonicalRanges 로 범위를 바꾼다).
+   monospace    finalize.os2.isFixedPitch 면 모든 폭이 0 · 칸의 1~3 배 가운데 하나다.
+                 레시피의 setWidth op 가 일부러 정한 폭(조판용 공백 등)은 빼고 본다.
 
 알고 있는 문제는 레시피의 verify.known 에 {검사 이름: 까닭} 으로 적으면 보고만 하고
 실패로 치지 않는다.
 
 ② 이전 판과 비교 — 보고만 한다. build/report/<가족>.md 에 적는다.
    코드포인트 추가 · 삭제, 윤곽이나 폭이 바뀐 글자(블록별), 스크립트 · 언어 · 기능
-   목록, 주요 메트릭, 고정 문장의 셰이핑 결과.
+   목록, 주요 메트릭, 고정 문장의 셰이핑 결과. 고정 문장은 로마자 · 숫자 · 기호 몇 줄과
+   글꼴이 가진 문자 체계마다 뽑은 글자 한 줄, 그리고 레시피의 verify.corpus 다.
 
 셰이핑을 쓰는 검사(context · positions · locl · 셰이핑 비교)는 uharfbuzz 가 있어야
 한다 (pip install 'hapchija[verify]'). 없으면 건너뛰고 알린다.
@@ -49,24 +56,42 @@ try:
 except ImportError:  # 셰이핑 검사만 건너뛴다
     hb = None
 
-# 문맥 — 이 글자 뒤에 시험할 글자를 놓고 그 문자 체계로 셰이핑한다
-CONTEXTS = [("Zyyy", ""), ("Latn", "a"), ("Grek", "α"), ("Cyrl", "д"),
-            ("Hang", "가"), ("Hani", "漢"), ("Kana", "か")]
 # 문맥과 상관없는 기능 — 글자 하나를 바꾸지 않거나 문자 체계마다 달라야 하는 것
 CONTEXT_SKIP = {"aalt", "locl", "ccmp", "liga", "dlig", "calt", "rlig", "rclt", "vert", "vrt2"}
 POSITION_TEXT = "(17.4, 0/1) T. V, 7: 1% [A]"
-# locl 언어 태그 → BCP 47
-BCP47 = {"KOR": "ko", "JAN": "ja", "ZHT": "zh-TW", "ZHH": "zh-HK", "ZHTM": "zh-MO",
-         "ZHS": "zh-CN"}
+# 어느 글꼴에나 쓰는 고정 문장. 글꼴마다 뜻 있는 문장은 레시피의 verify.corpus 에
 CORPUS = [
     "Hamburgefonstiv 0123456789 (a+b)=c",
-    "다람쥐 헌 쳇바퀴에 타고파 2024년 1/2분기",
-    "漢字 圖書館의設計者 社神者館兌 令和6年",
-    "ひらがな カタカナ ぴょん ショッピング",
-    "Ελληνικά Кириллица",
-    "→ ← ≠ ≤ ■ ○ ★ ① ㈜ ‘인용’ “따옴”",
+    "1/2 3/4 10:30 v1.2.3 0xFF 1,000.5%",
+    "→ ← ≠ ≤ ■ ○ ★ ① ‘quote’ “quote”",
 ]
 SAMPLES = 6
+SCRIPT_LINE = 12                         # 문자 체계마다 뽑는 글자 수
+
+
+def bcp47(tag):
+    """OpenType 언어 태그(KOR, ZHT …)를 BCP 47 로."""
+    return hb.ot_tag_to_language("%-4s" % tag) if hb else None
+
+
+def _script_letters(font, cmap):
+    """글꼴의 GSUB · GPOS 스크립트마다 cmap 에 있는 글자들 — {ISO 15924: [코드포인트]}.
+
+    문맥 검사와 셰이핑 비교에 쓴다. 글꼴이 가진 스크립트에서 만들므로 문자 체계를
+    따로 적지 않는다.
+    """
+    from fontTools import unicodedata as fud
+    tags = set()
+    for t in ("GSUB", "GPOS"):
+        if t in font:
+            tags |= {r.ScriptTag for r in font[t].table.ScriptList.ScriptRecord}
+    want = {fud.ot_tag_to_script(t) for t in tags} - {None, "Zyyy", "Zinh"}
+    out = defaultdict(list)
+    for c in sorted(cmap):
+        sc = fud.script(chr(c))
+        if sc in want and ud.category(chr(c)) in ("Lu", "Ll", "Lo"):
+            out[sc].append(c)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -183,6 +208,15 @@ def _shape(hfont, names, text, script=None, lang=None, feats=None):
             [(p.x_advance, p.x_offset, p.y_offset) for p in buf.glyph_positions])
 
 
+def _same_outline(glyf, hmtx, a, b):
+    """두 글리프의 윤곽과 폭이 같은가 (이름만 다른 복사본)."""
+    if glyf is None or hmtx[a][0] != hmtx[b][0]:
+        return False
+    ca, ea, _ = glyf[a].getCoordinates(glyf)
+    cb, eb, _ = glyf[b].getCoordinates(glyf)
+    return list(ca) == list(cb) and list(ea) == list(eb)
+
+
 def analyze(job):
     """글꼴 하나의 사실. job = (열쇠, 소스, 검사 설정)."""
     key, src, cfg = job
@@ -246,7 +280,8 @@ def analyze(job):
             if c not in cmap:
                 continue
             n = ud.normalize("NFC", chr(c))
-            if len(n) == 1 and ord(n) != c and ord(n) in cmap and cmap[ord(n)] != cmap[c]:
+            if len(n) == 1 and ord(n) != c and ord(n) in cmap and cmap[ord(n)] != cmap[c] \
+                    and not _same_outline(glyf, hmtx, cmap[ord(n)], cmap[c]):
                 bad.append(chr(c))
         if bad:
             facts["problems"].append(("canonical", "호환 한자가 정준 한자와 다른 글리프: %d 자 (%s)"
@@ -255,8 +290,9 @@ def analyze(job):
     # 고정폭
     if cfg.get("monospace"):
         unit = hmtx[cmap[ord("0")]][0]
+        free = cfg.get("setWidth") or set()
         odd = sorted({(hmtx[n][0], c) for c, n in cmap.items()
-                      if hmtx[n][0] % unit or hmtx[n][0] > 3 * unit})
+                      if c not in free and (hmtx[n][0] % unit or hmtx[n][0] > 3 * unit)})
         if odd:
             facts["problems"].append(("monospace", "폭이 칸(%d)의 0~3 배가 아닌 글자 %d 개: %s"
                                       % (unit, len(odd),
@@ -276,7 +312,8 @@ def analyze(job):
     names = order
 
     # 문맥 — GSUB 기능이 공통 문자를 어느 문자 체계 옆에서든 똑같이 바꾸는가
-    contexts = [(s, p) for s, p in CONTEXTS if not p or ord(p) in cmap]
+    letters = _script_letters(font, cmap)
+    contexts = [("Zyyy", "")] + [(sc, chr(cs[0])) for sc, cs in sorted(letters.items())]
     rev = defaultdict(list)
     for c, n in cmap.items():
         rev[n].append(c)
@@ -323,6 +360,7 @@ def analyze(job):
                     continue
                 alt[sid][c] = n
         expect = []                      # (말, 언어, 기능, 코드포인트, 기대 글리프)
+        bad_canon = []
         for tag, (sid, enc) in sorted(loc["langs"].items()):
             cps = sorted(R.within_set(enc, alt[sid]))
             step = max(1, len(cps) // SAMPLES)
@@ -331,29 +369,52 @@ def analyze(job):
                 facts["problems"].append(("locl", "%s 가 바꿀 %s 글리프가 하나도 없다" % (tag, sid)))
                 continue
             for c in pick:
-                expect.append((tag, BCP47.get(tag), None, c, alt[sid][c]))
+                expect.append((tag, bcp47(tag), None, c, alt[sid][c]))
                 expect.append(("언어 없음", None, None, c, cmap[c]))
                 if loc.get("default"):
-                    expect.append((loc["default"], BCP47.get(loc["default"]), None, c, cmap[c]))
+                    expect.append((loc["default"], bcp47(loc["default"]), None, c, cmap[c]))
                 for ftag, lang in loc["features"].items():
                     if lang == tag:
                         expect.append((ftag, None, ftag, c, alt[sid][c]))
+        # 정준 한자 글리프를 복사해 둔 호환 한자 (finalize.unify_canonical): keepFor 소스의
+        # 언어에서는 원래 이체자로, 다른 언어와 cvXX 에서는 정준 한자와 같은 글리프로
+        canon = [(c, n) for c, n in cmap.items() if n.endswith(".canon")]
+        for c, n in canon:
+            d = ord(ud.normalize("NFC", chr(c)))
+            runs = [(tag, bcp47(tag), None, sid) for tag, (sid, _) in sorted(loc["langs"].items())]
+            runs += [(f, None, f, loc["langs"].get(l, (None,))[0])
+                     for f, l in sorted(loc["features"].items())]
+            for what, lang, ftag, sid in runs:
+                feats = {ftag: True} if ftag else None
+                got, _ = _shape(hfont, names, chr(c), None, lang, feats)
+                ref, _ = _shape(hfont, names, chr(d), None, lang, feats)
+                if sid is not None and sid == loc.get("keepFor"):
+                    if got[0] in (n, ref[0]):
+                        bad_canon.append("%s %s→%s (이체자를 기대)" % (what, chr(c), got[0]))
+                elif got[0] != ref[0] and not (got[0] == n and ref[0] == cmap[d]):
+                    bad_canon.append("%s %s→%s (기대 %s)" % (what, chr(c), got[0], ref[0]))
         bad = []
         for what, lang, ftag, c, want in expect:
             g, _ = _shape(hfont, names, chr(c), None, lang, {ftag: True} if ftag else None)
             if g[0] != want:
                 bad.append("%s %s→%s (기대 %s)" % (what, chr(c), g[0], want))
+        bad += bad_canon
         if bad:
             facts["problems"].append(("locl", "%d 건: %s" % (len(bad), "; ".join(bad[:8]))))
 
     # 셰이핑 비교용 결과
     if cfg.get("corpus"):
         combos = [("", None, None)]
-        combos += [(BCP47[t], BCP47[t], None) for t in loc["langs"] if t in BCP47] if loc else []
+        combos += [(bcp47(t), bcp47(t), None) for t in sorted(loc["langs"])] if loc else []
         combos += [(f, None, f) for f in sorted(gsub_dflt) if f not in ("aalt",)]
         combos += [(f, None, f) for f in (loc["features"] if loc else {}) if f not in gsub_dflt]
+        # 문자 체계마다 한 줄 — 그 체계 글자를 고르게 뽑는다
+        lines = list(cfg["corpus"])
+        for sc, cs in sorted(letters.items()):
+            step = max(1, len(cs) // SCRIPT_LINE)
+            lines.append("%s: %s" % (sc, "".join(chr(c) for c in cs[::step][:SCRIPT_LINE])))
         res = {}
-        for line in cfg["corpus"]:
+        for line in lines:
             for label, lang, ftag in combos:
                 g, pos = _shape(hfont, names, line, None, lang, {ftag: True} if ftag else None)
                 res[(line, label)] = (" ".join(g), sum(p[0] for p in pos))
@@ -450,13 +511,23 @@ def _cfg(rec, variants, hinted, shape, hashes, corpus):
     if rec.get("locl"):
         langs = R.locl_langs(rec)
         loc = {"langs": langs, "default": rec["locl"].get("default"),
-               "features": R.locl_features(rec), "sources": {v[0] for v in langs.values()}}
-    # 호환 한자 가운데 정준 한자와 같아야 하는 범위. 기본은 KS X 1001 의 호환 한자다
-    # (같은 한자의 다른 독음이라 자형이 같아야 한다). U+FA0C 이후의 JIS 호환 한자는
-    # 일부러 다른 자형을 지키는 코드라 넣지 않는다.
+               "features": R.locl_features(rec), "sources": {v[0] for v in langs.values()},
+               "keepFor": (fin.get("mapCanonical") or {}).get("keepFor")}
+    # 호환 문자 가운데 정준 문자와 같아야 하는 범위 — 레시피가 finalize 에서 약속한 것
     canon = [[int(a, 16), int(b, 16)] for a, b in
-             ver.get("canonicalRanges", [["f900", "fa0b"]] if fin.get("mapCanonical") else [])]
+             ver.get("canonicalRanges", (fin.get("mapCanonical") or {}).get("unify", []))]
+    # 레시피의 setWidth op 가 폭을 정한 코드포인트 — 고정폭 검사에서 뺀다
+    set_width = set()
+    for src in rec.get("sources", []):
+        for key in ("preOps", "ops", "opsAfter"):
+            for spec in src.get(key) or []:
+                if spec.get("op") != "setWidth":
+                    continue
+                set_width.update(R.cp(v) for v in ([spec["cp"]] if "cp" in spec else []) + spec.get("cps", []))
+                for pair in ([spec["range"]] if "range" in spec else []) + spec.get("ranges", []):
+                    set_width.update(R.cp_range(pair))
     return {"minMargin": ver.get("minGlyphMargin", 1000),
+            "setWidth": set_width,
             "canonical": canon,
             "monospace": bool(fin.get("os2", {}).get("isFixedPitch")),
             "hinted": hinted, "locl": loc, "shape": shape, "hashes": hashes,

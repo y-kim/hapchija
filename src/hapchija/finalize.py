@@ -112,6 +112,70 @@ def map_canonical(font, ranges):
     return added
 
 
+def unify_canonical(font, ranges):
+    """호환 한자가 따로 그린 글리프를 가졌으면 정준 한자의 글리프를 복사해 그 자리에 둔다.
+
+    KS X 1001 의 호환 한자(U+F900-FA0B)는 같은 한자의 다른 독음이다. 한국어
+    입력기로 朗 을 '낭'으로 넣든 '랑'으로 넣든 같은 자형이어야 한다. 그런데 일본
+    소스는 이 가운데 일부를 JIS 이체자로 따로 그려 두었다. 그 글리프는 버리지 않고
+    `unify_locl` 이 일본어 locl 로 되살린다.
+
+    정준 한자 글리프를 그대로 가리키지 않고 복사본(`uniXXXX.canon`)을 두는 것은,
+    locl 이 글리프 단위로 바꾸기 때문이다 — 같은 글리프를 쓰면 일본어에서 호환 한자와
+    정준 한자를 구별해 바꿀 수 없다.
+
+    돌려주는 값은 {복사본: (코드포인트, 정준 한자 글리프, 원래 글리프)}.
+    """
+    import copy
+
+    cmap = font.getBestCmap()
+    tables = [t for t in font["cmap"].tables if t.isUnicode()]
+    glyf = font["glyf"]
+    order = list(font.getGlyphOrder())
+    made = {}
+    for pair in ranges:
+        for code in range(int(pair[0], 16), int(pair[1], 16) + 1):
+            dec = unicodedata.decomposition(chr(code))
+            if code not in cmap or not dec or " " in dec.strip():
+                continue
+            base = cmap.get(int(dec, 16))
+            orig = cmap[code]
+            if not base or base == orig:
+                continue
+            name = "uni%04X.canon" % code
+            glyph = copy.deepcopy(glyf[base])
+            order.append(name)
+            font.setGlyphOrder(order)
+            glyf.glyphOrder = order
+            glyf.glyphs[name] = glyph
+            font["hmtx"].metrics[name] = font["hmtx"].metrics[base]
+            if "vmtx" in font:
+                font["vmtx"].metrics[name] = font["vmtx"].metrics[base]
+            for t in tables:
+                t.cmap[code] = name
+            made[name] = (code, base, orig)
+    if made and "maxp" in font:
+        font["maxp"].numGlyphs = len(order)
+    return made
+
+
+def unify_locl(subs, langs, made, keep):
+    """`unify_canonical` 의 복사본을 locl 치환표에 넣는다.
+
+    소스 id 가 keep 인 언어에서는 원래 글리프(JIS 이체자)로, 다른 언어에서는 정준
+    한자가 바뀌는 글리프로 바꾼다 — 호환 한자가 어느 언어에서든 정준 한자와 같은
+    자형이 되되, 일본어에서는 일본 자형이 된다.
+    """
+    for tag, (sid, enc) in langs.items():
+        m = subs[tag]
+        for name, (code, base, orig) in made.items():
+            if sid == keep:
+                if R.within_set(enc, [code]):
+                    m[name] = orig
+            elif base in m:
+                m[name] = m[base]
+
+
 def inherit_default_features(path):
     """모든 스크립트가 DFLT 의 기본 기능을 물려받게 한다 (GSUB · GPOS).
 
@@ -187,8 +251,13 @@ def fix_tables(rec, path, style):
 
     drop_codepoints(font, [R.cp(c) for c in fin.get("removeCodepoints", [])])
 
+    made = {}
     if fin.get("mapCanonical"):
-        n = map_canonical(font, fin["mapCanonical"].get("ranges", []))
+        mc = fin["mapCanonical"]
+        made = unify_canonical(font, mc.get("unify", []))
+        if made:
+            print("  호환 한자를 정준 한자 글리프로: %d자" % len(made))
+        n = map_canonical(font, mc.get("ranges", []))
         if n:
             print("  정준 등가 연결: %d자" % n)
 
@@ -237,6 +306,7 @@ def fix_tables(rec, path, style):
 
     font.save(path)
     font.close()
+    return made
 
 
 def dehint(src, dst):
@@ -274,7 +344,7 @@ def dehint(src, dst):
     font.close()
 
 
-def add_locl(rec, path):
+def add_locl(rec, path, made=None):
     """GSUB 에 나라별 자형(locl)을 더한다 — 이미 있는 기능은 그대로 둔다.
 
     레시피의 locl 은 {언어 태그: 소스 id 또는 {from, within}} 이다. compose 가 소스마다
@@ -314,6 +384,8 @@ def add_locl(rec, path):
             if base and base != name:
                 m[base] = name
         subs[tag] = m
+    if made:
+        unify_locl(subs, langs, made, rec["finalize"]["mapCanonical"].get("keepFor"))
     if len(order) > 65535:
         raise SystemExit("ERROR: 글리프가 %d 개로 TrueType 상한을 넘는다" % len(order))
 
@@ -383,7 +455,12 @@ def add_locl(rec, path):
         back = {}
         for m in subs.values():
             for base_name, alt in m.items():
-                back[alt] = base_name
+                if base_name not in (made or {}):
+                    back[alt] = base_name
+        for m in subs.values():          # 호환 한자의 복사본은 제 글리프로만 되돌린다
+            for base_name, alt in m.items():
+                if base_name in (made or {}) and alt not in back:
+                    back[alt] = base_name
         st = ot.SingleSubst()
         st.mapping = back
         lk = ot.Lookup()
@@ -549,10 +626,10 @@ def run(rec, work_dir, variants, styles=None, src_dirs=None):
                   " (윤곽이 달라 못 옮김 %d)" % differ if differ else ""))
 
         print("fix tables: " + name)
-        fix_tables(rec, base, style)
+        made = fix_tables(rec, base, style)
         inherit_default_features(base)
         if rec.get("locl"):
-            add_locl(rec, base)
+            add_locl(rec, base, made)
 
     shutil.rmtree(parts_dir, ignore_errors=True)
     print("finalize: done")
